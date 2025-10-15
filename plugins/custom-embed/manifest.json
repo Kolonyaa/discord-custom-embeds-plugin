@@ -1,0 +1,14 @@
+{
+  "name": "Custom Embds",
+  "description": "Replace sent text in order to embed text through custom embeds via open graph protocol",
+  "authors": [
+    {
+      "name": "uoh.core",
+      "id": "1427789036289785959"
+    }
+  ],
+  "main": "src/index.ts",
+  "vendetta": {
+    "icon": "ic_message_edit"
+  }
+}
