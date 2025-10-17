@@ -1,1 +1,0 @@
-discord custom embeds plugin !!
