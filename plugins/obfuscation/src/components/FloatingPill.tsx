@@ -11,12 +11,13 @@ const styles = stylesheet.createThemedStyleSheet({
     cornerRadius: 8,
   } as any,
   container: {
-    backgroundColor: semanticColors.BACKGROUND_TERTIARY,
+    backgroundColor: "transparent", // Changed to transparent
     borderRadius: 8,
     marginRight: 8,
     marginTop: -12,
     flexDirection: "row",
     alignItems: "center",
+    alignSelf: "flex-end", // Anchor to right border
   },
   text: {
     color: semanticColors.TEXT_NORMAL,
