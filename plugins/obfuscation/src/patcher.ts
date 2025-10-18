@@ -1,182 +1,112 @@
-// sendButtonPatch.ts (paste into your patcher.ts or import/run from applyPatches)
-import { findByName, findByProps } from "@vendetta/metro";
+import { findByProps, findByStoreName, findByName } from "@vendetta/metro";
 import { before, after } from "@vendetta/patcher";
-import React from "react";
+import { FluxDispatcher } from "@vendetta/metro/common";
 import { vstorage } from "./storage";
+import { scramble, unscramble } from "./obfuscationUtils";
 
-function getComponentCandidate(name: string) {
-  // try findByName (common), then findByProps as fallback
-  return findByName(name) || findByProps(name);
-}
+const Messages = findByProps("sendMessage", "editMessage", "receiveMessage");
+const MessageStore = findByStoreName("MessageStore");
+const RowManager = findByName("RowManager");
 
-// Helper: get a component constructor from a module export that might be { type } or default
-function normalizeToComponent(mod: any) {
-  if (!mod) return null;
-  if (typeof mod === "function") return mod;
-  if (mod.type && typeof mod.type === "function") return mod.type;
-  if (mod.default && typeof mod.default === "function") return mod.default;
-  return null;
-}
+export function applyPatches() {
+  const patches = [];
 
-// Helper: try to tint an icon React element (Image/SVG) by setting color/tintColor/style props
-function tintIconElement(elem: any, color = "#34D399") {
-  if (!React.isValidElement(elem)) return elem;
-  const newProps: any = {};
+  // Outgoing messages - add visual indicator for everyone
+  patches.push(
+    before("sendMessage", Messages, (args) => {
+      const msg = args[1];
+      const content = msg?.content;
 
-  // If icon uses a 'color' prop (vector icons), set it.
-  if ("color" in (elem.props || {})) newProps.color = color;
-  // If icon uses style/tintColor, merge the style.
-  const oldStyle = elem.props?.style;
-  if (oldStyle) {
-    newProps.style = Array.isArray(oldStyle) ? [...oldStyle, { tintColor: color }] : [oldStyle, { tintColor: color }];
-  } else {
-    newProps.style = { tintColor: color };
-  }
-
-  return React.cloneElement(elem, newProps);
-}
-
-// Primary installer: patches ChatInputSendButton / ChatInputActions
-export function patchInputButtons() {
-  const unpatches: Array<() => void> = [];
-
-  // Candidate names seen in various clients/plugins
-  const candidateNames = ["ChatInputSendButton", "ChatInputActions", "ChatInput", "ChannelTextArea"];
-
-  for (const name of candidateNames) {
-    try {
-      const raw = getComponentCandidate(name);
-      const comp = normalizeToComponent(raw);
-      if (!comp || !comp.prototype || typeof comp.prototype.render !== "function") {
-        continue;
+      if (!content || content.startsWith(`[🔐${vstorage.marker}]`) || content.startsWith(`[🔓${vstorage.marker}]`) || !vstorage.enabled || !vstorage.secret) {
+        return;
       }
 
-      // BEFORE render: mutate the props argument directly (forwardRef moment)
-      const uBefore = before("render", comp.prototype, ([props, ref]) => {
+      try {
+        const scrambled = scramble(content, vstorage.secret);
+        // Send with visual indicator so EVERYONE sees the lock icon
+        msg.content = `[🔐${vstorage.marker}] ${scrambled}`;
+      } catch (e) {
+        console.error("[ObfuscationPlugin] Failed to scramble message:", e);
+      }
+    })
+  );
+
+  // Patch RowManager for message rendering
+  patches.push(
+    before("generate", RowManager.prototype, ([data]) => {
+      if (data.rowType !== 1 || !vstorage.enabled) return;
+      
+      const message = data.message;
+      const content = message?.content;
+      
+      // Check if message has our lock indicator (encrypted message)
+      if (!content?.startsWith(`[🔐${vstorage.marker}]`)) return;
+
+      const messageId = `${message.channel_id}-${message.id}`;
+      const encryptedBody = content.slice(`[🔐${vstorage.marker}] `.length);
+
+      // If we have the secret, try to decrypt and show unlocked version
+      if (vstorage.secret) {
         try {
-          // only when enabled
-          if (!vstorage.enabled) return;
+          const decoded = unscramble(encryptedBody, vstorage.secret);
+          // Successfully decoded with our key - replace with unlocked version
+          message.content = `[🔓${vstorage.marker}] ${decoded}`;
+        } catch {
+          // Failed to decrypt with our key, leave as locked version
+          // message.content stays as `[🔐${vstorage.marker}] ${encryptedBody}`
+        }
+      }
+      // If no secret, message stays as locked version
+    })
+  );
 
-          if (!props || typeof props !== "object") return;
+  // Also patch getMessage
+  patches.push(
+    after("getMessage", MessageStore, (args, message) => {
+      if (!message || !vstorage.enabled) return message;
+      
+      const content = message.content;
+      if (!content?.startsWith(`[🔐${vstorage.marker}]`)) return message;
 
-          // Example heuristics:
-          // - For send button, props may include 'canSendVoiceMessage', 'onPress', 'icon', 'hasText', etc.
-          // - For actions, props often include 'isAppLauncherEnabled', 'shouldShowGiftButton', etc.
+      const encryptedBody = content.slice(`[🔐${vstorage.marker}] `.length);
 
-          // If there's a single 'icon' prop, try tinting it
-          if (props.icon) {
-            props.icon = tintIconElement(props.icon, "#34D399");
-          }
+      if (vstorage.secret) {
+        try {
+          const decoded = unscramble(encryptedBody, vstorage.secret);
+          message.content = `[🔓${vstorage.marker}] ${decoded}`;
+        } catch {
+          // Leave as locked if decryption fails
+        }
+      }
+      
+      return message;
+    })
+  );
 
-          // If children include an icon element (e.g., a View with children), try to map children
-          if (props.children) {
-            // simple: if children is a valid element and has a child icon prop, try to tint recursively
-            const children = Array.isArray(props.children) ? props.children : [props.children];
-            let modified = false;
-            const newChildren = children.map((c: any) => {
-              try {
-                if (React.isValidElement(c)) {
-                  // If it's a direct icon, tint it
-                  if (c.props && ("color" in c.props || "style" in c.props)) {
-                    modified = true;
-                    return tintIconElement(c, "#34D399");
-                  }
-
-                  // If it has a single child that is an icon, attempt to tint that child
-                  const inner = c.props?.children;
-                  if (React.isValidElement(inner) && (inner.props?.color || inner.props?.style)) {
-                    const replacedInner = tintIconElement(inner, "#34D399");
-                    modified = true;
-                    return React.cloneElement(c, undefined, replacedInner);
-                  }
-                }
-              } catch (e) {
-                // ignore errors for non-standard shapes
-              }
-              return c;
+  // Process existing messages by forcing a re-render
+  const reprocessExistingMessages = () => {
+    if (!vstorage.enabled) return;
+    
+    console.log("[ObfuscationPlugin] Reprocessing existing messages...");
+    
+    const channels = MessageStore.getMutableMessages?.() ?? {};
+    
+    Object.entries(channels).forEach(([channelId, channelMessages]: [string, any]) => {
+      if (channelMessages && typeof channelMessages === 'object') {
+        Object.values(channelMessages).forEach((message: any) => {
+          if (message?.content?.startsWith(`[🔐${vstorage.marker}]`)) {
+            FluxDispatcher.dispatch({
+              type: "MESSAGE_UPDATE",
+              message: message,
+              log_edit: false,
             });
-
-            if (modified) {
-              props.children = Array.isArray(props.children) ? newChildren : newChildren[0];
-            }
           }
-
-          // If the component accepts a style prop, append a tint (less likely for icon, more for wrapper)
-          if (props.style) {
-            props.style = Array.isArray(props.style) ? [...props.style, { tintColor: "#34D399" }] : [props.style, { tintColor: "#34D399" }];
-          }
-
-          // store ref if needed externally
-          // (some plugins use refs to call setHasText or onShowActions later)
-          if (ref) {
-            try {
-              (comp as any).__lastRef = ref;
-            } catch {}
-          }
-        } catch (e) {
-          console.error("[ObfuscationPlugin] send-button before-render error:", e);
-        }
-      });
-
-      unpatches.push(uBefore);
-
-      // AFTER render: if icon is deeper in returned element tree, cloneElement the return to change it
-      const uAfter = after("render", comp.prototype, (args, res) => {
-        try {
-          if (!vstorage.enabled || !res) return res;
-
-          // If res.props.icon exists, tint it
-          if (res.props?.icon) {
-            return React.cloneElement(res, { icon: tintIconElement(res.props.icon, "#34D399") });
-          }
-
-          // If the return has children, search shallowly for an icon-like child and tint it
-          const children = React.Children.toArray(res.props?.children ?? []);
-          let changed = false;
-          const newChildren = children.map((c: any) => {
-            if (!React.isValidElement(c)) return c;
-            if (c.props && ("color" in c.props || "style" in c.props)) {
-              changed = true;
-              return tintIconElement(c, "#34D399");
-            }
-            // try inner child
-            const inner = c.props?.children;
-            if (React.isValidElement(inner) && (inner.props?.color || inner.props?.style)) {
-              changed = true;
-              const replacedInner = tintIconElement(inner, "#34D399");
-              return React.cloneElement(c, undefined, replacedInner);
-            }
-            return c;
-          });
-
-          if (changed) {
-            return React.cloneElement(res, undefined, ...newChildren);
-          }
-
-          // fallback: if root supports style, merge highlight
-          if (res.props && res.props.style) {
-            const oldStyle = res.props.style;
-            const mergedStyle = Array.isArray(oldStyle) ? [...oldStyle, { borderColor: "#34D399", borderWidth: 1 }] : [oldStyle, { borderColor: "#34D399", borderWidth: 1 }];
-            return React.cloneElement(res, { style: mergedStyle });
-          }
-
-          return res;
-        } catch (e) {
-          console.error("[ObfuscationPlugin] send-button after-render error:", e);
-          return res;
-        }
-      });
-
-      unpatches.push(uAfter);
-
-      console.log(`[ObfuscationPlugin] installed send-button patches on: ${name}`);
-    } catch (e) {
-      // ignore and continue
-    }
-  }
-
-  // If you want to keep unpatchers to call later:
-  return () => {
-    for (const u of unpatches) u && u();
+        });
+      }
+    });
   };
+
+  setTimeout(reprocessExistingMessages, 500);
+
+  return () => patches.forEach(unpatch => unpatch());
 }
