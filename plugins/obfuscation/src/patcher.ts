@@ -4,7 +4,7 @@ import { before, after } from "@vendetta/patcher";
 import { FluxDispatcher } from "@vendetta/metro/common";
 import { vstorage } from "./storage";
 import { scramble, unscramble } from "./obfuscationUtils";
-import ObfuscationLabel from "./components/obfuscationLabel";
+import ObfuscationLabel from "./components/ObfuscationLabel.tsx";
 
 const Messages = findByProps("sendMessage", "editMessage", "receiveMessage");
 const MessageStore = findByStoreName("MessageStore");
