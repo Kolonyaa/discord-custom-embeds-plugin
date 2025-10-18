@@ -26,10 +26,10 @@ const styles = stylesheet.createThemedStyleSheet({
     paddingVertical: 8,
   },
   enabled: {
-    color: semanticColors.TEXT_POSITIVE,
+    color: "#ffb3d4",
   },
   disabled: {
-    color: semanticColors.TEXT_MUTED,
+    color: "semanticColors.TEXT_MUTED",
   },
 });
 
