@@ -11,15 +11,15 @@ const { getCustomEmojiById } = findByStoreName("EmojiStore");
 
 // Base emoji URL without marker
 const BASE_EMOJI_URL = "https://cdn.discordapp.com/emojis/1413171773284810883.webp?size=48&quality=lossless&name=blowjob4";
-const EMOJI_REGEX = /https:\/\/cdn\.discordapp\.com\/emojis\/1413171773284810883\.webp\?size=48&quality=lossless&name=blowjob4(&marker=[^&\s]+)/;
+const EMOJI_REGEX = /<https:\/\/cdn\.discordapp\.com\/emojis\/1413171773284810883\.webp\?size=48&quality=lossless&name=blowjob4(&marker=[^>&\s]+)>/;
 
 // Helper functions to work with marker URLs
 function createEmojiUrlWithMarker(marker) {
-  return `${BASE_EMOJI_URL}&marker=${encodeURIComponent(marker)}`;
+  return `<${BASE_EMOJI_URL}&marker=${encodeURIComponent(marker)}>`;
 }
 
 function extractMarkerFromUrl(url) {
-  const match = url.match(/&marker=([^&\s]+)/);
+  const match = url.match(/&marker=([^>&\s]+)/);
   return match ? decodeURIComponent(match[1]) : null;
 }
 
@@ -45,7 +45,7 @@ export function applyPatches() {
 
       try {
         const scrambled = scramble(content, vstorage.secret);
-        // Add emoji URL with marker before the encrypted content
+        // Add wrapped emoji URL with marker before the encrypted content
         const emojiWithMarker = createEmojiUrlWithMarker(vstorage.marker);
         msg.content = `${emojiWithMarker} ${scrambled}`;
       } catch (e) {
@@ -67,23 +67,23 @@ export function applyPatches() {
 
       const messageId = `${message.channel_id}-${message.id}`;
       
-      // Extract marker from the URL
+      // Extract marker from the wrapped URL
       const markerMatch = content.match(EMOJI_REGEX);
       const marker = markerMatch ? extractMarkerFromUrl(markerMatch[0]) : null;
       
       if (!marker) return;
 
-      // Extract the encrypted body (everything after the emoji URL)
-      const emojiUrl = markerMatch[0];
-      const encryptedBody = content.slice(content.indexOf(emojiUrl) + emojiUrl.length).trim();
+      // Extract the encrypted body (everything after the wrapped emoji URL)
+      const wrappedEmojiUrl = markerMatch[0];
+      const encryptedBody = content.slice(content.indexOf(wrappedEmojiUrl) + wrappedEmojiUrl.length).trim();
 
       // If we have the secret, try to decrypt
       if (vstorage.secret && encryptedBody) {
         try {
           const decoded = unscramble(encryptedBody, vstorage.secret);
           // Successfully decoded - replace content with decrypted version
-          // Use the same emoji URL but now the content is decrypted
-          message.content = `${emojiUrl} ${decoded}`;
+          // Use the same wrapped emoji URL but now the content is decrypted
+          message.content = `${wrappedEmojiUrl} ${decoded}`;
           content = message.content; // Update local content variable
           data.__decrypted = true;
         } catch (e) {
@@ -94,10 +94,12 @@ export function applyPatches() {
         data.__encrypted = true;
       }
 
-      // Process the emoji URL to render as actual emoji
+      // Process the wrapped emoji URL to render as actual emoji
       if (content && hasObfuscationEmoji(content)) {
-        // Replace the emoji URL with a space-separated version for processing
-        const processedContent = content.replace(emojiUrl, ` ${emojiUrl} `);
+        // Extract the actual URL from the wrapped version for processing
+        const actualUrl = wrappedEmojiUrl.slice(1, -1); // Remove < and >
+        // Replace the wrapped URL with the actual URL for emoji rendering
+        const processedContent = content.replace(wrappedEmojiUrl, ` ${actualUrl} `);
         message.content = processedContent;
         data.__realmoji = true;
       }
@@ -145,20 +147,20 @@ export function applyPatches() {
       const content = message.content;
       if (!hasObfuscationEmoji(content)) return message;
 
-      // Extract marker and encrypted body
+      // Extract marker and encrypted body from wrapped URL
       const markerMatch = content.match(EMOJI_REGEX);
       const marker = markerMatch ? extractMarkerFromUrl(markerMatch[0]) : null;
       
       if (!marker) return message;
 
-      const emojiUrl = markerMatch[0];
-      const encryptedBody = content.slice(content.indexOf(emojiUrl) + emojiUrl.length).trim();
+      const wrappedEmojiUrl = markerMatch[0];
+      const encryptedBody = content.slice(content.indexOf(wrappedEmojiUrl) + wrappedEmojiUrl.length).trim();
 
       // If we have the secret, try to decrypt
       if (vstorage.secret && encryptedBody) {
         try {
           const decoded = unscramble(encryptedBody, vstorage.secret);
-          message.content = `${emojiUrl} ${decoded}`;
+          message.content = `${wrappedEmojiUrl} ${decoded}`;
         } catch {
           // Leave as encrypted if decryption fails
         }
