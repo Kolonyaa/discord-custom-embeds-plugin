@@ -26,8 +26,8 @@ function createEmojiUrl(): string {
   return `<${BASE_EMOJI_URL}>`;
 }
 
-function hasObfuscationEmoji(content: string): boolean {
-  return content?.includes(BASE_EMOJI_URL);
+function hasObfuscationEmoji(content) {
+  return content?.startsWith("\u200B");
 }
 
 export function applyPatches() {
@@ -52,7 +52,7 @@ export function applyPatches() {
         console.log("[ObfuscationPlugin] Scrambled to:", scrambled);
         
         // Simplified - just use the emoji URL without marker
-        msg.content = `${createEmojiUrl()} ${scrambled}`;
+        msg.content = `\u200B${scrambled}`;
       } catch (e) {
         console.error("[ObfuscationPlugin] Error in sendMessage patch:", e);
       }
