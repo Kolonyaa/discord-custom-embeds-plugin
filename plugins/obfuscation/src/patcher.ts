@@ -1,6 +1,6 @@
 import { findByProps, findByStoreName, findByName } from "@vendetta/metro";
 import { before, after } from "@vendetta/patcher";
-import { FluxDispatcher } from "@vendetti/metro/common";
+import { FluxDispatcher } from "@vendetta/metro/common";
 import { vstorage } from "./storage";
 import { scramble, unscramble } from "./obfuscationUtils";
 
@@ -81,28 +81,24 @@ export function applyPatches() {
       if (vstorage.secret && encryptedBody) {
         try {
           const decoded = unscramble(encryptedBody, vstorage.secret);
-          // Successfully decoded - replace content with decrypted version
-          // Extract the actual URL from the markdown link for emoji rendering
+          // Successfully decoded - we need to format this so the URL gets rendered as an emoji
+          // Extract the actual URL from the markdown link
           const urlMatch = markdownLink.match(/<([^>]+)>/);
           const actualUrl = urlMatch ? urlMatch[1] : BASE_EMOJI_URL;
           
-          // Replace the markdown link with just the URL for emoji rendering
+          // For plugin users, we want to show the emoji, not the URL text
+          // We'll process this in the after patch to convert the URL to an emoji component
           message.content = `${actualUrl} ${decoded}`;
-          content = message.content; // Update local content variable
+          content = message.content;
           data.__decrypted = true;
+          data.__realmoji = true;
         } catch (e) {
-          // Failed to decrypt with our key, leave as encrypted
+          // Failed to decrypt with our key
           data.__encrypted = true;
+          data.__realmoji = true;
         }
       } else {
         data.__encrypted = true;
-      }
-
-      // Process the emoji URL to render as actual emoji
-      if (content && content.includes(BASE_EMOJI_URL)) {
-        // Replace the URL with a space-separated version for processing
-        const processedContent = content.replace(BASE_EMOJI_URL, ` ${BASE_EMOJI_URL} `);
-        message.content = processedContent;
         data.__realmoji = true;
       }
     })
@@ -116,8 +112,45 @@ export function applyPatches() {
       const message = row?.message;
       if (!message || !message.content) return;
 
-      // Process the content array to convert emoji URLs to custom emoji components
-      if (Array.isArray(message.content)) {
+      // We need to find and replace the URL with a custom emoji component
+      // First, let's check if the content contains our emoji URL
+      if (typeof message.content === 'string' && message.content.includes(BASE_EMOJI_URL)) {
+        // Convert the string content to an array of message components
+        const parts = message.content.split(' ');
+        const newContent = [];
+        
+        for (const part of parts) {
+          if (part.includes(BASE_EMOJI_URL)) {
+            // This is our emoji URL - convert it to a custom emoji component
+            const match = part.match(/https:\/\/cdn\.discordapp\.com\/emojis\/(\d+)\.webp/);
+            if (match) {
+              const url = `${match[0]}?size=128`;
+              const emoji = getCustomEmojiById(match[1]);
+              
+              newContent.push({
+                type: "customEmoji",
+                id: match[1],
+                alt: emoji?.name ?? "<obfuscation-emoji>",
+                src: url,
+                frozenSrc: url.replace("gif", "webp"),
+                jumboable: false,
+              });
+              continue;
+            }
+          }
+          // Regular text content
+          if (part.trim()) {
+            newContent.push({
+              type: "text",
+              content: part + (part === parts[parts.length - 1] ? "" : " "),
+            });
+          }
+        }
+        
+        message.content = newContent;
+      }
+      // If content is already an array, process it
+      else if (Array.isArray(message.content)) {
         for (let i = 0; i < message.content.length; i++) {
           const el = message.content[i];
           if (el.type === "link" && el.target?.includes(BASE_EMOJI_URL)) {
