@@ -1,17 +1,17 @@
 import { applyPatches } from "./patcher";
-import applyPillPatcher from "./pillPatcher";
+import FloatingPill from "./pillPatcher";
 import Settings from "./Settings";
 
-let unpatch: () => void;
+let patches: ReturnType<typeof applyPatches>;
 let pillUnpatch: () => void;
 
 export function onLoad() {
-  unpatch = applyPatches();
-  pillUnpatch = applyPillPatcher();
+  patches = applyPatches();
+  pillUnpatch = () => {};
 }
 
 export function onUnload() {
-  unpatch?.();
+  patches?.unpatchAll();
   pillUnpatch?.();
 }
 
