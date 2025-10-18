@@ -58,17 +58,15 @@ export function scramble(text: string, secret: string): string {
   combined[3] = iv & 0xff;
   combined.set(cipher, 4);
 
-  // Use hex encoding (always safe for text)
-  return Array.from(combined).map(b => b.toString(16).padStart(2, '0')).join('');
-}}
+  let s = "";
+  for (let i = 0; i < combined.length; i++) s += String.fromCharCode(combined[i]);
+  return btoa(s);
+}
 
-export function unscramble(hex: string, secret: string): string {
-  if (hex.length % 2 !== 0) throw new Error("Invalid hex data");
-  
-  const data = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < hex.length; i += 2) {
-    data[i / 2] = parseInt(hex.substr(i, 2), 16);
-  }
+export function unscramble(base64: string, secret: string): string {
+  const raw = atob(base64);
+  const data = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) data[i] = raw.charCodeAt(i);
 
   if (data.length < 4) throw new Error("Invalid data");
 
