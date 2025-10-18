@@ -2,6 +2,8 @@ import { React } from "@vendetta/metro/common";
 import { ReactNative as RN } from "@vendetta/metro/common";
 import { stylesheet } from "@vendetta/metro/common";
 import { semanticColors } from "@vendetta/ui";
+import { useProxy } from "@vendetta/storage";
+import { vstorage } from "../storage";
 
 const styles = stylesheet.createThemedStyleSheet({
   androidRipple: {
@@ -31,20 +33,21 @@ const styles = stylesheet.createThemedStyleSheet({
   },
 });
 
-interface FloatingPillProps {
-  isEnabled: boolean;
-  onToggle: () => void;
-}
+export default function FloatingPill() {
+  useProxy(vstorage);
 
-export default function FloatingPill({ isEnabled, onToggle }: FloatingPillProps) {
+  const handleToggle = () => {
+    vstorage.enabled = !vstorage.enabled;
+  };
+
   return (
     <RN.Pressable
       android_ripple={styles.androidRipple}
       style={styles.container}
-      onPress={onToggle}
+      onPress={handleToggle}
     >
-      <RN.Text style={[styles.text, isEnabled ? styles.enabled : styles.disabled]}>
-        {isEnabled ? "🔐 ON" : "🔓 OFF"}
+      <RN.Text style={[styles.text, vstorage.enabled ? styles.enabled : styles.disabled]}>
+        {vstorage.enabled ? "🔐 ON" : "🔓 OFF"}
       </RN.Text>
     </RN.Pressable>
   );

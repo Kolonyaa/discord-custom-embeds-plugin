@@ -17,13 +17,15 @@ export function applyPatches() {
       const msg = args[1];
       const content = msg?.content;
 
-      if (!content || content.startsWith(`[🔐${vstorage.marker}]`) || content.startsWith(`[🔓${vstorage.marker}]`) || !vstorage.enabled || !vstorage.secret) {
+      // Add this check - if obfuscation is disabled, don't process the message
+      if (!vstorage.enabled) return;
+
+      if (!content || content.startsWith(`[🔐${vstorage.marker}]`) || content.startsWith(`[🔓${vstorage.marker}]`) || !vstorage.secret) {
         return;
       }
 
       try {
         const scrambled = scramble(content, vstorage.secret);
-        // Send with visual indicator so EVERYONE sees the lock icon
         msg.content = `[🔐${vstorage.marker}] ${scrambled}`;
       } catch (e) {
         console.error("[ObfuscationPlugin] Failed to scramble message:", e);
@@ -35,10 +37,10 @@ export function applyPatches() {
   patches.push(
     before("generate", RowManager.prototype, ([data]) => {
       if (data.rowType !== 1 || !vstorage.enabled) return;
-      
+
       const message = data.message;
       const content = message?.content;
-      
+
       // Check if message has our lock indicator (encrypted message)
       if (!content?.startsWith(`[🔐${vstorage.marker}]`)) return;
 
@@ -64,7 +66,7 @@ export function applyPatches() {
   patches.push(
     after("getMessage", MessageStore, (args, message) => {
       if (!message || !vstorage.enabled) return message;
-      
+
       const content = message.content;
       if (!content?.startsWith(`[🔐${vstorage.marker}]`)) return message;
 
@@ -78,7 +80,7 @@ export function applyPatches() {
           // Leave as locked if decryption fails
         }
       }
-      
+
       return message;
     })
   );
@@ -86,11 +88,11 @@ export function applyPatches() {
   // Process existing messages by forcing a re-render
   const reprocessExistingMessages = () => {
     if (!vstorage.enabled) return;
-    
+
     console.log("[ObfuscationPlugin] Reprocessing existing messages...");
-    
+
     const channels = MessageStore.getMutableMessages?.() ?? {};
-    
+
     Object.entries(channels).forEach(([channelId, channelMessages]: [string, any]) => {
       if (channelMessages && typeof channelMessages === 'object') {
         Object.values(channelMessages).forEach((message: any) => {

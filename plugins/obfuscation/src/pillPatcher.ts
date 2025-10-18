@@ -3,8 +3,7 @@ import { React } from "@vendetta/metro/common";
 import { after } from "@vendetta/patcher";
 import { findInReactTree } from "@vendetta/utils";
 
-import { vstorage } from "./storage";
-import FloatingPill from "./components/FloatingPill";
+import FloatingPill from "../components/FloatingPill";
 
 const ChatInputGuardWrapper = findByName("ChatInputGuardWrapper", false);
 const JumpToPresentButton = findByName("JumpToPresentButton", false);
@@ -22,14 +21,7 @@ export default () => {
       if (!children) return;
 
       // Add the floating pill to the chat input
-      children.unshift(
-        React.createElement(FloatingPill, {
-          isEnabled: vstorage.enabled,
-          onToggle: () => {
-            vstorage.enabled = !vstorage.enabled;
-          },
-        })
-      );
+      children.unshift(React.createElement(FloatingPill));
     })
   );
 
