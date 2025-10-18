@@ -11,13 +11,13 @@ const RowManager = findByName("RowManager");
 export function applyPatches() {
   const patches = [];
 
-  // Outgoing messages - add visual indicator for everyone
+  // Outgoing messages - only apply if obfuscation is enabled
   patches.push(
     before("sendMessage", Messages, (args) => {
       const msg = args[1];
       const content = msg?.content;
 
-      // Add this check - if obfuscation is disabled, don't process the message
+      // Only skip if obfuscation is disabled (this controls SENDING only)
       if (!vstorage.enabled) return;
 
       if (!content || content.startsWith(`[🔐${vstorage.marker}]`) || content.startsWith(`[🔓${vstorage.marker}]`) || !vstorage.secret) {
@@ -33,10 +33,10 @@ export function applyPatches() {
     })
   );
 
-  // Patch RowManager for message rendering
+  // Patch RowManager for message rendering - ALWAYS process incoming messages
   patches.push(
     before("generate", RowManager.prototype, ([data]) => {
-      if (data.rowType !== 1 || !vstorage.enabled) return;
+      if (data.rowType !== 1) return; // Remove the vstorage.enabled check here
 
       const message = data.message;
       const content = message?.content;
@@ -62,10 +62,10 @@ export function applyPatches() {
     })
   );
 
-  // Also patch getMessage
+  // Also patch getMessage - ALWAYS process incoming messages
   patches.push(
     after("getMessage", MessageStore, (args, message) => {
-      if (!message || !vstorage.enabled) return message;
+      if (!message) return message;
 
       const content = message.content;
       if (!content?.startsWith(`[🔐${vstorage.marker}]`)) return message;
@@ -85,10 +85,8 @@ export function applyPatches() {
     })
   );
 
-  // Process existing messages by forcing a re-render
+  // Process existing messages by forcing a re-render - ALWAYS process
   const reprocessExistingMessages = () => {
-    if (!vstorage.enabled) return;
-
     console.log("[ObfuscationPlugin] Reprocessing existing messages...");
 
     const channels = MessageStore.getMutableMessages?.() ?? {};
