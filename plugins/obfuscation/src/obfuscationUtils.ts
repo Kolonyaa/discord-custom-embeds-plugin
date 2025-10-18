@@ -58,20 +58,17 @@ export function scramble(text: string, secret: string): string {
   combined[3] = iv & 0xff;
   combined.set(cipher, 4);
 
-  // Use URL-safe base64 without padding
-  let base64 = btoa(String.fromCharCode(...combined));
-  base64 = base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-  return base64;
-}
+  // Use hex encoding (always safe for text)
+  return Array.from(combined).map(b => b.toString(16).padStart(2, '0')).join('');
+}}
 
-export function unscramble(base64: string, secret: string): string {
-  // Convert back from URL-safe base64
-  base64 = base64.replace(/-/g, '+').replace(/_/g, '/');
-  while (base64.length % 4) base64 += '=';
+export function unscramble(hex: string, secret: string): string {
+  if (hex.length % 2 !== 0) throw new Error("Invalid hex data");
   
-  const raw = atob(base64);
-  const data = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) data[i] = raw.charCodeAt(i);
+  const data = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    data[i / 2] = parseInt(hex.substr(i, 2), 16);
+  }
 
   if (data.length < 4) throw new Error("Invalid data");
 
