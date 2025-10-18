@@ -14,21 +14,24 @@ const BASE_EMOJI_URL = "https://cdn.discordapp.com/emojis/1429170621891477615.we
 const EMOJI_REGEX = /<https:\/\/cdn\.discordapp\.com\/emojis\/1429170621891477615\.webp\?size=48&quality=lossless(&marker=[^>&\s]+)>/;
 
 // Helper functions to work with marker URLs
-function createEmojiUrlWithMarker(marker) {
+function createEmojiUrlWithMarker(marker: string): string {
   return `<${BASE_EMOJI_URL}&marker=${encodeURIComponent(marker)}>`;
 }
 
-function extractMarkerFromUrl(url) {
+function extractMarkerFromUrl(url: string): string | null {
   const match = url.match(/&marker=([^>&\s]+)/);
   return match ? decodeURIComponent(match[1]) : null;
 }
 
-function hasObfuscationEmoji(content) {
+function hasObfuscationEmoji(content: string): boolean {
   return content?.includes(BASE_EMOJI_URL);
 }
 
 export function applyPatches() {
   const patches = [];
+
+  // Debug: Log when patches are applied
+  console.log("[ObfuscationPlugin] Applying patches...");
 
   // Outgoing messages - add visual indicator for everyone
   patches.push(
@@ -37,17 +40,32 @@ export function applyPatches() {
       const content = msg?.content;
 
       // Only skip if obfuscation is disabled (this controls SENDING only)
-      if (!vstorage.enabled) return;
-
-      if (!content || hasObfuscationEmoji(content) || !vstorage.secret) {
+      if (!vstorage.enabled) {
+        console.log("[ObfuscationPlugin] Obfuscation disabled, skipping");
         return;
       }
 
+      if (!content || hasObfuscationEmoji(content) || !vstorage.secret) {
+        console.log("[ObfuscationPlugin] Invalid content or no secret:", { 
+          hasContent: !!content, 
+          hasEmoji: hasObfuscationEmoji(content), 
+          hasSecret: !!vstorage.secret 
+        });
+        return;
+      }
+
+      console.log("[ObfuscationPlugin] Original content:", content);
+      
       try {
         const scrambled = scramble(content, vstorage.secret);
+        console.log("[ObfuscationPlugin] Scrambled content:", scrambled);
+        
         // Add wrapped emoji URL with marker before the encrypted content
         const emojiWithMarker = createEmojiUrlWithMarker(vstorage.marker);
+        // Use clearer separation between emoji and encoded content
         msg.content = `${emojiWithMarker} -- ${scrambled}`;
+        
+        console.log("[ObfuscationPlugin] Final content to send:", msg.content);
       } catch (e) {
         console.error("[ObfuscationPlugin] Failed to scramble message:", e);
       }
@@ -58,49 +76,43 @@ export function applyPatches() {
   patches.push(
     before("generate", RowManager.prototype, ([data]) => {
       if (data.rowType !== 1) return;
+      if (!data.message?.content) return;
 
-      const message = data.message;
-      let content = message?.content;
-
-      // Check if message has our emoji indicator
+      const content = data.message.content;
       if (!hasObfuscationEmoji(content)) return;
 
+      console.log("[ObfuscationPlugin] Processing message for display:", content);
 
-      // Extract marker from the wrapped URL
       const markerMatch = content.match(EMOJI_REGEX);
-      const marker = markerMatch ? extractMarkerFromUrl(markerMatch[0]) : null;
-
-      if (!marker) return;
-
-      // Extract the encrypted body (everything after the wrapped emoji URL)
-      const wrappedEmojiUrl = markerMatch[0];
-      const encryptedBody = content.slice(content.indexOf(wrappedEmojiUrl) + wrappedEmojiUrl.length).trim();
-
-      // If we have the secret, try to decrypt
-      if (vstorage.secret && encryptedBody) {
-        try {
-          const decoded = unscramble(encryptedBody, vstorage.secret);
-          // Successfully decoded - replace content with decrypted version
-          // Use the same wrapped emoji URL but now the content is decrypted
-          message.content = `${wrappedEmojiUrl} ${decoded}`;
-          content = message.content; // Update local content variable
-          data.__decrypted = true;
-        } catch (e) {
-          // Failed to decrypt with our key, leave as encrypted
-          data.__encrypted = true;
-        }
-      } else {
-        data.__encrypted = true;
+      if (!markerMatch) {
+        console.log("[ObfuscationPlugin] No marker match found");
+        return;
       }
 
-      // Process the wrapped emoji URL to render as actual emoji
-      if (content && hasObfuscationEmoji(content)) {
-        // Extract the actual URL from the wrapped version for processing
-        const actualUrl = wrappedEmojiUrl.slice(1, -1); // Remove < and >
-        // Replace the wrapped URL with the actual URL for emoji rendering
-        const processedContent = content.replace(wrappedEmojiUrl, ` ${actualUrl} `);
-        message.content = processedContent;
-        data.__realmoji = true;
+      const wrappedEmojiUrl = markerMatch[0];
+      // Extract the encrypted body (everything after the wrapped emoji URL and separator)
+      const contentAfterEmoji = content.slice(content.indexOf(wrappedEmojiUrl) + wrappedEmojiUrl.length);
+      const encryptedBody = contentAfterEmoji.replace(/^\s*--\s*/, '').trim();
+
+      console.log("[ObfuscationPlugin] Encrypted body extracted:", encryptedBody);
+
+      // If we have no secret or no encrypted body, just render as-is
+      if (!vstorage.secret || !encryptedBody) {
+        console.log("[ObfuscationPlugin] No secret or encrypted body, marking as encrypted");
+        data.__encrypted = true;
+        return;
+      }
+
+      try {
+        const decoded = unscramble(encryptedBody, vstorage.secret);
+        console.log("[ObfuscationPlugin] Successfully decoded:", decoded);
+        
+        // Replace the entire content with decoded version but keep the emoji
+        data.message.content = `${wrappedEmojiUrl} ${decoded}`;
+        data.__decrypted = true;
+      } catch (e) {
+        console.error("[ObfuscationPlugin] Failed to decode:", e, "Encrypted body:", encryptedBody);
+        data.__encrypted = true;
       }
     })
   );
@@ -147,6 +159,8 @@ export function applyPatches() {
       const content = message.content;
       if (!hasObfuscationEmoji(content)) return message;
 
+      console.log("[ObfuscationPlugin] getMessage processing:", content);
+
       // Extract marker and encrypted body from wrapped URL
       const markerMatch = content.match(EMOJI_REGEX);
       const marker = markerMatch ? extractMarkerFromUrl(markerMatch[0]) : null;
@@ -154,14 +168,17 @@ export function applyPatches() {
       if (!marker) return message;
 
       const wrappedEmojiUrl = markerMatch[0];
-      const encryptedBody = content.slice(content.indexOf(wrappedEmojiUrl) + wrappedEmojiUrl.length).trim();
+      const contentAfterEmoji = content.slice(content.indexOf(wrappedEmojiUrl) + wrappedEmojiUrl.length);
+      const encryptedBody = contentAfterEmoji.replace(/^\s*--\s*/, '').trim();
 
       // If we have the secret, try to decrypt
       if (vstorage.secret && encryptedBody) {
         try {
           const decoded = unscramble(encryptedBody, vstorage.secret);
+          console.log("[ObfuscationPlugin] getMessage decoded:", decoded);
           message.content = `${wrappedEmojiUrl} ${decoded}`;
-        } catch {
+        } catch (e) {
+          console.error("[ObfuscationPlugin] getMessage failed to decode:", e);
           // Leave as encrypted if decryption fails
         }
       }
@@ -174,24 +191,34 @@ export function applyPatches() {
   const reprocessExistingMessages = () => {
     console.log("[ObfuscationPlugin] Reprocessing existing messages...");
 
-    const channels = MessageStore.getMutableMessages?.() ?? {};
+    // Wait a bit longer for everything to be ready
+    setTimeout(() => {
+      const channels = MessageStore.getMutableMessages?.() ?? {};
 
-    Object.entries(channels).forEach(([channelId, channelMessages]: [string, any]) => {
-      if (channelMessages && typeof channelMessages === 'object') {
-        Object.values(channelMessages).forEach((message: any) => {
-          if (hasObfuscationEmoji(message?.content)) {
-            FluxDispatcher.dispatch({
-              type: "MESSAGE_UPDATE",
-              message: message,
-              log_edit: false,
-            });
-          }
-        });
-      }
-    });
+      let processedCount = 0;
+      Object.entries(channels).forEach(([channelId, channelMessages]: [string, any]) => {
+        if (channelMessages && typeof channelMessages === 'object') {
+          Object.values(channelMessages).forEach((message: any) => {
+            if (hasObfuscationEmoji(message?.content)) {
+              console.log("[ObfuscationPlugin] Reprocessing message:", message.content);
+              FluxDispatcher.dispatch({
+                type: "MESSAGE_UPDATE",
+                message: { ...message }, // Create a new object to force update
+              });
+              processedCount++;
+            }
+          });
+        }
+      });
+      
+      console.log(`[ObfuscationPlugin] Reprocessed ${processedCount} messages`);
+    }, 1000);
   };
 
-  setTimeout(reprocessExistingMessages, 500);
+  setTimeout(reprocessExistingMessages, 1000);
 
-  return () => patches.forEach(unpatch => unpatch());
+  return () => {
+    console.log("[ObfuscationPlugin] Removing patches...");
+    patches.forEach(unpatch => unpatch());
+  };
 }
