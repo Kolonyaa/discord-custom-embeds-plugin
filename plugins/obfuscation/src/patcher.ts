@@ -144,13 +144,25 @@ export function applyPatches() {
       if (vstorage.secret && encryptedBody) {
         try {
           const decoded = unscramble(encryptedBody, vstorage.secret);
-          // Rebuild the content preserving the markdown-wrapped emoji link (so non-plugin view remains nice)
           const mdWrappedEmoji = createMarkdownWrappedEmoji(marker);
+
+          // Update message content with decrypted text
           message.content = `${mdWrappedEmoji} ${decoded}`;
-          content = message.content; // update local copy
+          content = message.content;
           data.__decrypted = true;
+
+          // Force reparse for renderer
+          delete message.contentParsed;
+          delete message.parsedContent;
+          if (typeof message.content === "string") {
+            // Re-dispatch to make sure Discord re-renders the message row
+            FluxDispatcher.dispatch({
+              type: "MESSAGE_UPDATE",
+              message,
+              log_edit: false,
+            });
+          }
         } catch (e) {
-          // Failed to decrypt with our key, leave as encrypted
           data.__encrypted = true;
         }
       } else {
