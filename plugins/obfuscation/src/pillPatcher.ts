@@ -1,67 +1,72 @@
-import { findByName } from "@vendetta/metro";
 import { React } from "@vendetta/metro/common";
-import { after } from "@vendetta/patcher";
-import { findInReactTree } from "@vendetta/utils";
+import { ReactNative as RN } from "@vendetta/metro/common";
+import { stylesheet } from "@vendetta/metro/common";
+import { semanticColors } from "@vendetta/ui";
+import { useProxy } from "@vendetta/storage";
 import { vstorage } from "../storage";
-import FloatingPill from "../components/FloatingPill";
+import { FluxDispatcher } from "@vendetta/metro/common";
 
-const ChatInputGuardWrapper = findByName("ChatInputGuardWrapper", false);
-const JumpToPresentButton = findByName("JumpToPresentButton", false);
+const styles = stylesheet.createThemedStyleSheet({
+  androidRipple: {
+    color: semanticColors.ANDROID_RIPPLE,
+    cornerRadius: 8,
+  } as any,
+  container: {
+    backgroundColor: semanticColors.BACKGROUND_TERTIARY,
+    borderRadius: 8,
+    marginRight: 8,
+    marginTop: -12,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  text: {
+    color: semanticColors.TEXT_NORMAL,
+    fontSize: 12,
+    fontWeight: "600",
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+  },
+  enabled: {
+    color: semanticColors.TEXT_POSITIVE,
+  },
+  disabled: {
+    color: semanticColors.TEXT_MUTED,
+  },
+});
 
-export default () => {
-  const patches: (() => void)[] = [];
-  let forceUpdateKey = 0;
+export default function FloatingPill() {
+  useProxy(vstorage);
 
-  patches.push(
-    after("default", ChatInputGuardWrapper, (_, ret) => {
-      const children = findInReactTree(
-        ret.props.children,
-        x => x.type?.displayName === "View" && Array.isArray(x.props?.children)
-      )?.props?.children as any[];
+  const handleToggle = () => {
+    const newState = !vstorage.enabled;
+    vstorage.enabled = newState;
+    
+    // Force immediate UI update
+    setTimeout(() => {
+      // Dispatch multiple events to ensure re-render
+      FluxDispatcher.dispatch({
+        type: "UPDATE_TEXT_INPUT",
+        value: "", 
+      });
       
-      if (!children) return;
-
-      // Remove any existing pill first
-      const existingPillIndex = children.findIndex(child => 
-        child?.type?.name === "FloatingPill" || child?.type?.displayName === "FloatingPill"
-      );
-      if (existingPillIndex !== -1) {
-        children.splice(existingPillIndex, 1);
-      }
-
-      // Add the floating pill with a key that changes when enabled state changes
-      children.unshift(
-        React.createElement(FloatingPill, {
-          key: `obfuscation-pill-${vstorage.enabled}-${forceUpdateKey}`
-        })
-      );
-    })
-  );
-
-  // Listen for storage changes and force re-render
-  const originalEnabled = vstorage.enabled;
-  const interval = setInterval(() => {
-    if (vstorage.enabled !== originalEnabled) {
-      forceUpdateKey++;
-      // This will force the ChatInputGuardWrapper to re-render
-      FluxDispatcher.dispatch({ type: "UPDATE_TEXT_INPUT" });
-    }
-  }, 100);
-
-  // Adjust the JumpToPresentButton position to avoid overlap
-  patches.push(
-    after("default", JumpToPresentButton, (_, ret) => {
-      if (ret?.props?.style) {
-        ret.props.style = [
-          ...ret.props.style,
-          { bottom: ret.props.style[1].bottom + 32 + 8 },
-        ];
-      }
-    })
-  );
-
-  return () => {
-    clearInterval(interval);
-    for (const x of patches) x();
+      // Also try to force chat re-render
+      FluxDispatcher.dispatch({
+        type: "LOCAL_STORAGE_UPDATED",
+        key: "obfuscation-enabled",
+        value: newState,
+      });
+    }, 50);
   };
-};
+
+  return (
+    <RN.Pressable
+      android_ripple={styles.androidRipple}
+      style={styles.container}
+      onPress={handleToggle}
+    >
+      <RN.Text style={[styles.text, vstorage.enabled ? styles.enabled : styles.disabled]}>
+        {vstorage.enabled ? "🔐 ON" : "🔓 OFF"}
+      </RN.Text>
+    </RN.Pressable>
+  );
+}
