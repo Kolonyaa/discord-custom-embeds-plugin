@@ -81,13 +81,9 @@ export function applyPatches() {
       if (vstorage.secret && encryptedBody) {
         try {
           const decoded = unscramble(encryptedBody, vstorage.secret);
-          // Successfully decoded - replace content with decrypted version
-          // Extract the actual URL from the markdown link for emoji rendering
-          const urlMatch = markdownLink.match(/<([^>]+)>/);
-          const actualUrl = urlMatch ? urlMatch[1] : BASE_EMOJI_URL;
-          // Replace markdown link with just the URL for emoji rendering, plus decrypted content
-          message.content = `${actualUrl} ${decoded}`;
-          content = message.content; // Update local content variable
+          // Successfully decoded - we'll keep the markdown link but process it for emoji rendering
+          message.content = `${markdownLink} ${decoded}`;
+          content = message.content;
           data.__decrypted = true;
         } catch (e) {
           // Failed to decrypt with our key, leave as encrypted
@@ -97,16 +93,8 @@ export function applyPatches() {
         data.__encrypted = true;
       }
 
-      // Process the emoji URL to render as actual emoji
-      if (content && hasObfuscationEmoji(content)) {
-        // Replace the URL with a space-separated version for processing
-        const urlInContent = content.match(/https:\/\/cdn\.discordapp\.com\/emojis\/1413171773284810883\.webp\?[^\s]+/);
-        if (urlInContent) {
-          const processedContent = content.replace(urlInContent[0], ` ${urlInContent[0]} `);
-          message.content = processedContent;
-          data.__realmoji = true;
-        }
-      }
+      // Mark this message for emoji processing
+      data.__realmoji = true;
     })
   );
 
@@ -118,25 +106,63 @@ export function applyPatches() {
       const message = row?.message;
       if (!message || !message.content) return;
 
-      // Process the content array to convert emoji URLs to custom emoji components
+      // Process the content to convert markdown link to custom emoji
       if (Array.isArray(message.content)) {
         for (let i = 0; i < message.content.length; i++) {
           const el = message.content[i];
-          if (el.type === "link" && el.target?.includes(BASE_EMOJI_URL)) {
-            const match = el.target.match(/https:\/\/cdn\.discordapp\.com\/emojis\/(\d+)\.webp/);
-            if (!match) continue;
-            
-            const url = `${match[0]}?size=128`;
-            const emoji = getCustomEmojiById(match[1]);
-
-            message.content[i] = {
-              type: "customEmoji",
-              id: match[1],
-              alt: emoji?.name ?? "<obfuscation-emoji>",
-              src: url,
-              frozenSrc: url.replace("gif", "webp"),
-              jumboable: false,
-            };
+          
+          // Look for text nodes that contain our markdown link
+          if (el.type === "text" && el.content?.includes("[Obfuscation](")) {
+            const markdownMatch = el.content.match(EMOJI_REGEX);
+            if (markdownMatch) {
+              const markdownLink = markdownMatch[0];
+              const urlMatch = markdownLink.match(/<([^>]+)>/);
+              const actualUrl = urlMatch ? urlMatch[1] : BASE_EMOJI_URL;
+              
+              // Extract emoji ID from URL
+              const emojiMatch = actualUrl.match(/\/emojis\/(\d+)\.webp/);
+              if (!emojiMatch) continue;
+              
+              const emojiId = emojiMatch[1];
+              const emoji = getCustomEmojiById(emojiId);
+              const displayUrl = `${actualUrl.split('?')[0]}?size=128`;
+              
+              // Split the text around the markdown link
+              const parts = el.content.split(markdownLink);
+              
+              // Create new content array with emoji component
+              const newContent = [];
+              
+              // Add text before the markdown link
+              if (parts[0]) {
+                newContent.push({
+                  type: "text",
+                  content: parts[0]
+                });
+              }
+              
+              // Add the emoji component
+              newContent.push({
+                type: "customEmoji",
+                id: emojiId,
+                alt: emoji?.name ?? "🔒",
+                src: displayUrl,
+                frozenSrc: displayUrl.replace("webp", "png"),
+                jumboable: false,
+              });
+              
+              // Add text after the markdown link
+              if (parts[1]) {
+                newContent.push({
+                  type: "text", 
+                  content: parts[1]
+                });
+              }
+              
+              // Replace the single text element with our new array
+              message.content.splice(i, 1, ...newContent);
+              break; // We found and processed our markdown link
+            }
           }
         }
       }
@@ -164,10 +190,7 @@ export function applyPatches() {
       if (vstorage.secret && encryptedBody) {
         try {
           const decoded = unscramble(encryptedBody, vstorage.secret);
-          // Extract actual URL for display
-          const urlMatch = markdownLink.match(/<([^>]+)>/);
-          const actualUrl = urlMatch ? urlMatch[1] : BASE_EMOJI_URL;
-          message.content = `${actualUrl} ${decoded}`;
+          message.content = `${markdownLink} ${decoded}`;
         } catch {
           // Leave as encrypted if decryption fails
         }
