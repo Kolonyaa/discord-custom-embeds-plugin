@@ -33,21 +33,29 @@ const styles = stylesheet.createThemedStyleSheet({
   },
 });
 
-export default function FloatingPill() {
-  useProxy(vstorage);
+interface FloatingPillProps {
+  onToggle: (enabled: boolean) => void;
+}
 
-  const handleToggle = () => {
-    vstorage.enabled = !vstorage.enabled;
+export default function FloatingPill({ onToggle }: FloatingPillProps) {
+  useProxy(vstorage);
+  const [localEnabled, setLocalEnabled] = React.useState(vstorage.enabled);
+
+  const handlePress = () => {
+    const newState = !localEnabled;
+    setLocalEnabled(newState);
+    vstorage.enabled = newState;
+    onToggle(newState);
   };
 
   return (
     <RN.Pressable
       android_ripple={styles.androidRipple}
       style={styles.container}
-      onPress={handleToggle}
+      onPress={handlePress}
     >
-      <RN.Text style={[styles.text, vstorage.enabled ? styles.enabled : styles.disabled]}>
-        {vstorage.enabled ? "🔐 ON" : "🔓 OFF"}
+      <RN.Text style={[styles.text, localEnabled ? styles.enabled : styles.disabled]}>
+        {localEnabled ? "🔐 ON" : "🔓 OFF"}
       </RN.Text>
     </RN.Pressable>
   );
