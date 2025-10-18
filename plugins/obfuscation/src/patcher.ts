@@ -1,34 +1,14 @@
+// patcher.js (updated)
 import { findByProps, findByStoreName, findByName } from "@vendetta/metro";
 import { before, after } from "@vendetta/patcher";
-import { FluxDispatcher, React } from "@vendetta/metro/common";
+import { FluxDispatcher } from "@vendetta/metro/common";
 import { vstorage } from "./storage";
 import { scramble, unscramble } from "./obfuscationUtils";
+import ObfuscationLabel from "./components/obfuscationLabel";
 
 const Messages = findByProps("sendMessage", "editMessage", "receiveMessage");
 const MessageStore = findByStoreName("MessageStore");
 const RowManager = findByName("RowManager");
-
-// Create a custom label component similar to stafftag
-function ObfuscationLabel({ marker }) {
-  const { View, Text } = ReactNative;
-  
-  return React.createElement(View, {
-    style: {
-      backgroundColor: '#5865f2',
-      borderRadius: 4,
-      paddingHorizontal: 6,
-      paddingVertical: 2,
-      marginRight: 8,
-      alignSelf: 'flex-start',
-    }
-  }, React.createElement(Text, {
-    style: {
-      color: '#ffffff',
-      fontSize: 12,
-      fontWeight: 'bold',
-    }
-  }, marker));
-}
 
 export function applyPatches() {
   const patches = [];
@@ -48,7 +28,10 @@ export function applyPatches() {
 
       try {
         const scrambled = scramble(content, vstorage.secret);
-        msg.content = `[🔐${vstorage.marker}] ${scrambled}`;
+        // Remove the visual indicator from the actual content
+        msg.content = scrambled;
+        // We'll add the marker as metadata that we can read later
+        msg.obfuscationMarker = vstorage.marker;
       } catch (e) {
         console.error("[ObfuscationPlugin] Failed to scramble message:", e);
       }
@@ -62,92 +45,83 @@ export function applyPatches() {
 
       const message = data.message;
       const content = message?.content;
+      const marker = message?.obfuscationMarker || vstorage.marker;
 
-      // Check if message has our lock indicator (encrypted message)
-      if (!content?.startsWith(`[🔐${vstorage.marker}]`)) return;
+      // Check if this is an obfuscated message (either by marker or by content pattern)
+      const isObfuscated = message?.obfuscationMarker || 
+                           (content && !content.startsWith("[🔐") && !content.startsWith("[🔓"));
 
-      const encryptedBody = content.slice(`[🔐${vstorage.marker}] `.length);
+      if (!isObfuscated || !vstorage.secret) return;
 
-      // If we have the secret, try to decrypt and show unlocked version
-      if (vstorage.secret) {
-        try {
-          const decoded = unscramble(encryptedBody, vstorage.secret);
-          // Successfully decoded with our key - replace with unlocked version
-          message.content = `[🔓${vstorage.marker}] ${decoded}`;
-        } catch {
-          // Failed to decrypt with our key, leave as locked version
-        }
+      try {
+        const decoded = unscramble(content, vstorage.secret);
+        // Store the decoded content and mark as successfully decrypted
+        message._decodedContent = decoded;
+        message._isDecrypted = true;
+      } catch {
+        // Failed to decrypt, mark as encrypted
+        message._isDecrypted = false;
       }
     })
   );
 
-  // After message is generated, add our custom label
+  // After message is generated, add our label component
   patches.push(
     after("generate", RowManager.prototype, ([data], row) => {
-      if (data.rowType !== 1) return row;
+      if (data.rowType !== 1 || !row?.message) return;
 
       const message = data.message;
-      const content = message?.content;
-
-      // Check if this is one of our obfuscated messages
-      const isEncrypted = content?.startsWith(`[🔐${vstorage.marker}]`);
-      const isDecrypted = content?.startsWith(`[🔓${vstorage.marker}]`);
+      const marker = message?.obfuscationMarker || vstorage.marker;
       
-      if (!isEncrypted && !isDecrypted) return row;
+      // Check if this message was processed by our obfuscation system
+      const isObfuscated = message?.obfuscationMarker || 
+                          (message.content && !message.content.startsWith("[🔐") && !message.content.startsWith("[🔓"));
+
+      if (!isObfuscated) return;
 
       // Find the message content container in the React tree
-      const findMessageContent = (node) => {
-        if (!node || typeof node !== 'object') return null;
-        
-        // Look for the message content container
-        if (node.props?.className?.includes?.('messageContent') || 
-            node.props?.style?.flexDirection === 'row') {
-          return node;
-        }
-        
-        if (node.props?.children) {
-          const children = Array.isArray(node.props.children) ? node.props.children : [node.props.children];
-          for (const child of children) {
-            const result = findMessageContent(child);
-            if (result) return result;
-          }
-        }
-        
-        return null;
-      };
+      const contentContainer = findInReactTree(row, 
+        x => x?.props?.style?.flexDirection === "column" && 
+             Array.isArray(x.props.children)
+      );
 
-      const messageContent = findMessageContent(row);
-      if (messageContent && Array.isArray(messageContent.props.children)) {
-        // Create our label component
-        const label = React.createElement(ObfuscationLabel, {
-          marker: vstorage.marker,
-          key: 'obfuscation-label'
-        });
-        
-        // Insert the label at the beginning of the message content
-        messageContent.props.children.unshift(label);
+      if (!contentContainer) return;
+
+      // Create our label component
+      const labelElement = React.createElement(ObfuscationLabel, {
+        marker: marker,
+        isEncrypted: !message._isDecrypted
+      });
+
+      // Insert the label at the beginning of the message content
+      if (Array.isArray(contentContainer.props.children)) {
+        contentContainer.props.children.unshift(labelElement);
+      } else {
+        contentContainer.props.children = [labelElement, contentContainer.props.children];
       }
-
-      return row;
     })
   );
 
-  // Also patch getMessage - ALWAYS process incoming messages
+  // Also patch getMessage to handle message fetching
   patches.push(
     after("getMessage", MessageStore, (args, message) => {
       if (!message) return message;
 
       const content = message.content;
-      if (!content?.startsWith(`[🔐${vstorage.marker}]`)) return message;
+      const marker = message?.obfuscationMarker || vstorage.marker;
+      
+      if (!content || message.obfuscationMarker || content.startsWith("[🔐") || content.startsWith("[🔓")) {
+        return message;
+      }
 
-      const encryptedBody = content.slice(`[🔐${vstorage.marker}] `.length);
-
+      // Try to decrypt if we have the secret
       if (vstorage.secret) {
         try {
-          const decoded = unscramble(encryptedBody, vstorage.secret);
-          message.content = `[🔓${vstorage.marker}] ${decoded}`;
+          const decoded = unscramble(content, vstorage.secret);
+          message._decodedContent = decoded;
+          message._isDecrypted = true;
         } catch {
-          // Leave as locked if decryption fails
+          message._isDecrypted = false;
         }
       }
 
@@ -155,28 +129,24 @@ export function applyPatches() {
     })
   );
 
-  // Process existing messages by forcing a re-render - ALWAYS process
-  const reprocessExistingMessages = () => {
-    console.log("[ObfuscationPlugin] Reprocessing existing messages...");
-
-    const channels = MessageStore.getMutableMessages?.() ?? {};
-
-    Object.entries(channels).forEach(([channelId, channelMessages]: [string, any]) => {
-      if (channelMessages && typeof channelMessages === 'object') {
-        Object.values(channelMessages).forEach((message: any) => {
-          if (message?.content?.startsWith(`[🔐${vstorage.marker}]`)) {
-            FluxDispatcher.dispatch({
-              type: "MESSAGE_UPDATE",
-              message: message,
-              log_edit: false,
-            });
-          }
-        });
+  // Helper function to find in React tree (similar to stafftag plugin)
+  function findInReactTree(tree, filter) {
+    if (!tree) return null;
+    if (filter(tree)) return tree;
+    
+    if (tree.props?.children) {
+      const children = Array.isArray(tree.props.children) 
+        ? tree.props.children 
+        : [tree.props.children];
+      
+      for (const child of children) {
+        const result = findInReactTree(child, filter);
+        if (result) return result;
       }
-    });
-  };
-
-  setTimeout(reprocessExistingMessages, 500);
+    }
+    
+    return null;
+  }
 
   return () => patches.forEach(unpatch => unpatch());
 }
