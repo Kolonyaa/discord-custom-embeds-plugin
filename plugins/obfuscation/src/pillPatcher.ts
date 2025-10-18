@@ -3,7 +3,7 @@ import { React } from "@vendetta/metro/common";
 import { after } from "@vendetta/patcher";
 import { findInReactTree } from "@vendetta/utils";
 
-import FloatingPill from "../components/FloatingPill";
+import FloatingPill from "./components/FloatingPill"; // ← Fixed import path
 
 const ChatInputGuardWrapper = findByName("ChatInputGuardWrapper", false);
 const JumpToPresentButton = findByName("JumpToPresentButton", false);
@@ -20,15 +20,7 @@ export default () => {
       
       if (!children) return;
 
-      // Remove any existing pills to avoid duplicates
-      const existingPillIndex = children.findIndex(child => 
-        child?.type?.name === "FloatingPill"
-      );
-      if (existingPillIndex !== -1) {
-        children.splice(existingPillIndex, 1);
-      }
-
-      // Add the floating pill
+      // Add the floating pill to the chat input
       children.unshift(React.createElement(FloatingPill));
     })
   );
