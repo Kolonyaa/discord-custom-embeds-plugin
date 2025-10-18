@@ -8,15 +8,20 @@ const Messages = findByProps("sendMessage", "editMessage", "receiveMessage");
 const MessageStore = findByStoreName("MessageStore");
 const RowManager = findByName("RowManager");
 
-// Simple prefix instead of emoji for testing
-const PREFIX = "[ENC]";
+// Base emoji URL
+const BASE_EMOJI_URL = "https://cdn.discordapp.com/emojis/1429170621891477615.webp?size=48&quality=lossless";
+
+// Simple check for our emoji
+function hasObfuscationEmoji(content: string): boolean {
+  return content?.includes(BASE_EMOJI_URL);
+}
 
 export function applyPatches() {
   const patches = [];
 
-  console.log("[ObfuscationPlugin] Applying MINIMAL patches...");
+  console.log("[ObfuscationPlugin] Applying EMOJI patches...");
 
-  // ONLY patch sendMessage to scramble outgoing messages
+  // Outgoing messages - add emoji URL
   patches.push(
     before("sendMessage", Messages, (args) => {
       const msg = args[1];
@@ -24,7 +29,7 @@ export function applyPatches() {
 
       if (!vstorage.enabled) return;
       if (!content || !vstorage.secret) return;
-      if (content.startsWith(PREFIX)) return; // Don't double-encrypt
+      if (hasObfuscationEmoji(content)) return; // Don't double-encrypt
 
       console.log("[ObfuscationPlugin] Sending message:", content);
 
@@ -32,15 +37,15 @@ export function applyPatches() {
         const scrambled = scramble(content, vstorage.secret);
         console.log("[ObfuscationPlugin] Scrambled to:", scrambled);
         
-        // Add simple prefix
-        msg.content = `${PREFIX} ${scrambled}`;
+        // Add simple emoji URL before scrambled content
+        msg.content = `${BASE_EMOJI_URL} ${scrambled}`;
       } catch (e) {
         console.error("[ObfuscationPlugin] Failed to scramble:", e);
       }
     })
   );
 
-  // ONLY patch RowManager for incoming messages
+  // Process incoming messages in RowManager
   patches.push(
     before("generate", RowManager.prototype, ([data]) => {
       if (data.rowType !== 1) return;
@@ -48,12 +53,14 @@ export function applyPatches() {
 
       const content = data.message.content;
       
-      // Only process if it starts with our prefix
-      if (!content.startsWith(PREFIX)) return;
+      // Only process if it contains our emoji URL
+      if (!hasObfuscationEmoji(content)) return;
 
-      console.log("[ObfuscationPlugin] Processing encrypted message:", content);
+      console.log("[ObfuscationPlugin] Processing emoji message:", content);
 
-      const encryptedBody = content.slice(PREFIX.length).trim();
+      // Extract encrypted body (everything after emoji URL)
+      const emojiIndex = content.indexOf(BASE_EMOJI_URL);
+      const encryptedBody = content.slice(emojiIndex + BASE_EMOJI_URL.length).trim();
 
       if (!vstorage.secret || !encryptedBody) {
         console.log("[ObfuscationPlugin] No secret or encrypted body");
@@ -63,6 +70,8 @@ export function applyPatches() {
       try {
         const decoded = unscramble(encryptedBody, vstorage.secret);
         console.log("[ObfuscationPlugin] Successfully decoded:", decoded);
+        
+        // Replace entire content with decoded version
         data.message.content = decoded;
       } catch (e) {
         console.error("[ObfuscationPlugin] Failed to decode:", e);
@@ -80,7 +89,7 @@ export function applyPatches() {
       Object.entries(channels).forEach(([channelId, channelMessages]: [string, any]) => {
         if (channelMessages && typeof channelMessages === 'object') {
           Object.values(channelMessages).forEach((message: any) => {
-            if (message?.content?.startsWith(PREFIX)) {
+            if (hasObfuscationEmoji(message?.content)) {
               FluxDispatcher.dispatch({
                 type: "MESSAGE_UPDATE",
                 message: { ...message },
