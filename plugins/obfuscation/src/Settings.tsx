@@ -4,7 +4,7 @@ import { Forms } from "@vendetta/ui/components";
 import { useProxy } from "@vendetta/storage";
 import { vstorage } from "./storage";
 
-const { FormSection, FormInput, FormSwitch } = Forms;
+const { FormSection, FormSwitch, FormInput } = Forms;
 
 export default function Settings() {
   useProxy(vstorage);
@@ -16,13 +16,6 @@ export default function Settings() {
           label="Enable Obfuscation"
           value={vstorage.enabled}
           onValueChange={(v) => (vstorage.enabled = v)}
-        />
-
-        <FormInput
-          title="Marker"
-          value={vstorage.marker}
-          onChange={(v) => (vstorage.marker = v)}
-          placeholder="[obf🔒]"
         />
 
         <FormInput

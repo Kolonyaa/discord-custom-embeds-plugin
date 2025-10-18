@@ -17,30 +17,25 @@ try {
   console.warn("[ObfuscationPlugin] EmojiStore not available, emoji rendering disabled");
 }
 
-// Base emoji URL
+// Base emoji URL - simplified without marker
 const BASE_EMOJI_URL = "https://cdn.discordapp.com/emojis/1429170621891477615.webp?size=48&quality=lossless";
-const EMOJI_REGEX = /<https:\/\/cdn\.discordapp\.com\/emojis\/1429170621891477615\.webp\?size=48&quality=lossless(&marker=[^>&\s]+)>/;
+const EMOJI_REGEX = /<https:\/\/cdn\.discordapp\.com\/emojis\/1429170621891477615\.webp\?size=48&quality=lossless>/;
 
-// Helper functions
-function createEmojiUrlWithMarker(marker: string): string {
-  return `<${BASE_EMOJI_URL}&marker=${encodeURIComponent(marker)}>`;
+// Helper functions - simplified
+function createEmojiUrl(): string {
+  return `<${BASE_EMOJI_URL}>`;
 }
 
 function hasObfuscationEmoji(content: string): boolean {
   return content?.includes(BASE_EMOJI_URL);
 }
 
-function extractMarkerFromUrl(url: string): string | null {
-  const match = url.match(/&marker=([^>&\s]+)/);
-  return match ? decodeURIComponent(match[1]) : null;
-}
-
 export function applyPatches() {
   const patches = [];
 
-  console.log("[ObfuscationPlugin] Applying patches with error handling...");
+  console.log("[ObfuscationPlugin] Applying simplified patches...");
 
-  // Outgoing messages - add error handling
+  // Outgoing messages - simplified
   patches.push(
     before("sendMessage", Messages, (args) => {
       try {
@@ -56,14 +51,15 @@ export function applyPatches() {
         const scrambled = scramble(content, vstorage.secret);
         console.log("[ObfuscationPlugin] Scrambled to:", scrambled);
         
-        msg.content = `${createEmojiUrlWithMarker(vstorage.marker)} ${scrambled}`;
+        // Simplified - just use the emoji URL without marker
+        msg.content = `${createEmojiUrl()} ${scrambled}`;
       } catch (e) {
         console.error("[ObfuscationPlugin] Error in sendMessage patch:", e);
       }
     })
   );
 
-  // Process incoming messages with error handling
+  // Process incoming messages - simplified
   patches.push(
     before("generate", RowManager.prototype, ([data]) => {
       try {
@@ -75,12 +71,10 @@ export function applyPatches() {
 
         console.log("[ObfuscationPlugin] Processing message:", content);
 
-        const markerMatch = content.match(EMOJI_REGEX);
-        const marker = markerMatch ? extractMarkerFromUrl(markerMatch[0]) : null;
+        const emojiMatch = content.match(EMOJI_REGEX);
+        if (!emojiMatch) return;
 
-        if (!marker) return;
-
-        const wrappedEmojiUrl = markerMatch[0];
+        const wrappedEmojiUrl = emojiMatch[0];
         const encryptedBody = content.slice(content.indexOf(wrappedEmojiUrl) + wrappedEmojiUrl.length).trim();
 
         if (!vstorage.secret || !encryptedBody) {
@@ -98,7 +92,7 @@ export function applyPatches() {
     })
   );
 
-  // Emoji rendering patch with safety checks
+  // Emoji rendering patch (unchanged)
   if (getCustomEmojiById) {
     patches.push(
       after("generate", RowManager.prototype, ([data], row) => {
@@ -107,18 +101,15 @@ export function applyPatches() {
           const message = row?.message;
           if (!message || !message.content) return;
 
-          // Process the content array to convert emoji URLs to custom emoji components
           if (Array.isArray(message.content)) {
             for (let i = 0; i < message.content.length; i++) {
               const el = message.content[i];
-              // Check if element exists and has the expected properties
               if (el && el.type === "link" && el.target) {
                 const match = el.target.match(/https:\/\/cdn\.discordapp\.com\/emojis\/(\d+)\.\w+/);
                 if (!match) continue;
 
                 const url = `${match[0]}?size=128`;
                 
-                // Safely get emoji info
                 let emojiName = "<external-emoji>";
                 try {
                   const emoji = getCustomEmojiById(match[1]);
@@ -149,7 +140,7 @@ export function applyPatches() {
     console.warn("[ObfuscationPlugin] Skipping emoji rendering patch - getCustomEmojiById not available");
   }
 
-  // Process existing messages with error handling
+  // Process existing messages
   const reprocessExistingMessages = () => {
     try {
       console.log("[ObfuscationPlugin] Reprocessing existing messages...");
