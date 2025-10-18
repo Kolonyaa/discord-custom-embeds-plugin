@@ -10,8 +10,10 @@ const RowManager = findByName("RowManager");
 
 // Base emoji URL
 const BASE_EMOJI_URL = "https://cdn.discordapp.com/emojis/1429170621891477615.webp?size=48&quality=lossless";
+// EXACT regex from your original code
+const EMOJI_REGEX = /<https:\/\/cdn\.discordapp\.com\/emojis\/1429170621891477615\.webp\?size=48&quality=lossless(&marker=[^>&\s]+)>/;
 
-// Helper functions for marker system
+// Helper functions
 function createEmojiUrlWithMarker(marker: string): string {
   return `<${BASE_EMOJI_URL}&marker=${encodeURIComponent(marker)}>`;
 }
@@ -20,18 +22,17 @@ function hasObfuscationEmoji(content: string): boolean {
   return content?.includes(BASE_EMOJI_URL);
 }
 
-// Simple marker extraction without complex regex
-function extractMarkerFromContent(content: string): string | null {
-  const markerMatch = content.match(/&marker=([^>&\s]+)/);
-  return markerMatch ? decodeURIComponent(markerMatch[1]) : null;
+function extractMarkerFromUrl(url: string): string | null {
+  const match = url.match(/&marker=([^>&\s]+)/);
+  return match ? decodeURIComponent(match[1]) : null;
 }
 
 export function applyPatches() {
   const patches = [];
 
-  console.log("[ObfuscationPlugin] Applying MARKER SYSTEM patches...");
+  console.log("[ObfuscationPlugin] Applying COMPLEX REGEX patches...");
 
-  // Outgoing messages - add emoji URL with marker
+  // Outgoing messages - same as before
   patches.push(
     before("sendMessage", Messages, (args) => {
       const msg = args[1];
@@ -47,7 +48,6 @@ export function applyPatches() {
         const scrambled = scramble(content, vstorage.secret);
         console.log("[ObfuscationPlugin] Scrambled to:", scrambled);
         
-        // Add emoji URL WITH MARKER before scrambled content
         msg.content = `${createEmojiUrlWithMarker(vstorage.marker)} ${scrambled}`;
       } catch (e) {
         console.error("[ObfuscationPlugin] Failed to scramble:", e);
@@ -55,24 +55,24 @@ export function applyPatches() {
     })
   );
 
-  // Process incoming messages in RowManager
+  // Process incoming messages with EXACT original regex
   patches.push(
     before("generate", RowManager.prototype, ([data]) => {
       if (data.rowType !== 1) return;
       if (!data.message?.content) return;
 
       const content = data.message.content;
-      
-      // Only process if it contains our emoji URL
       if (!hasObfuscationEmoji(content)) return;
 
-      console.log("[ObfuscationPlugin] Processing marker message:", content);
+      console.log("[ObfuscationPlugin] Processing with complex regex:", content);
 
-      // Find the full wrapped URL (with marker)
-      const urlMatch = content.match(/<[^>]*1429170621891477615[^>]*>/);
-      if (!urlMatch) return;
+      // EXACT extraction logic from original code
+      const markerMatch = content.match(EMOJI_REGEX);
+      const marker = markerMatch ? extractMarkerFromUrl(markerMatch[0]) : null;
 
-      const wrappedEmojiUrl = urlMatch[0];
+      if (!marker) return;
+
+      const wrappedEmojiUrl = markerMatch[0];
       const encryptedBody = content.slice(content.indexOf(wrappedEmojiUrl) + wrappedEmojiUrl.length).trim();
 
       if (!vstorage.secret || !encryptedBody) {
@@ -84,8 +84,8 @@ export function applyPatches() {
         const decoded = unscramble(encryptedBody, vstorage.secret);
         console.log("[ObfuscationPlugin] Successfully decoded:", decoded);
         
-        // Replace entire content with decoded version
-        data.message.content = decoded;
+        // Use the same wrapped emoji URL but now the content is decrypted
+        data.message.content = `${wrappedEmojiUrl} ${decoded}`;
       } catch (e) {
         console.error("[ObfuscationPlugin] Failed to decode:", e);
       }
