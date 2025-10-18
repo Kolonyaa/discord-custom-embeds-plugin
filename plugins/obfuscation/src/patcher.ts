@@ -31,11 +31,24 @@ function hasObfuscationEmoji(content) {
 function extractEncryptedBody(content, mdLink) {
   if (!content || !mdLink) return "";
   
-  // Simple approach: everything after the markdown link
   const linkIndex = content.indexOf(mdLink);
   if (linkIndex === -1) return "";
   
-  return content.slice(linkIndex + mdLink.length).trim();
+  // Get everything after the markdown link and trim whitespace
+  const afterLink = content.slice(linkIndex + mdLink.length).trim();
+  
+  // The encrypted content should be base64, so we look for base64-like patterns
+  // Base64 typically doesn't have spaces in the middle of the encoded string
+  // Split by space and take the first part that looks like base64
+  const possibleBase64 = afterLink.split(/\s+/)[0];
+  
+  // Basic base64 validation - should only contain A-Za-z0-9+/= and have correct length
+  if (/^[A-Za-z0-9+/]*={0,2}$/.test(possibleBase64) && possibleBase64.length % 4 === 0) {
+    return possibleBase64;
+  }
+  
+  // If it doesn't look like valid base64, return the raw content (might be a false positive)
+  return afterLink;
 }
 
 export function applyPatches() {
@@ -77,22 +90,27 @@ export function applyPatches() {
 
       if (!marker || !mdLink) return;
 
-      // Extract the encrypted body (simple approach)
+      // Extract the encrypted body with validation
       const encryptedBody = extractEncryptedBody(content, mdLink);
 
-      // If we have the secret, try to decrypt
+      // If we have the secret and encrypted body looks valid, try to decrypt
       if (vstorage.secret && encryptedBody) {
         try {
+          console.log("[ObfuscationPlugin] Attempting to decrypt:", encryptedBody.substring(0, 50) + "...");
           const decoded = unscramble(encryptedBody, vstorage.secret);
+          console.log("[ObfuscationPlugin] Successfully decrypted:", decoded);
+          
           // Keep the markdown link for non-plugin users, but we'll process it for emoji rendering
           message.content = `${mdLink} ${decoded}`;
           content = message.content;
           data.__decrypted = true;
         } catch (e) {
           console.error("[ObfuscationPlugin] Failed to decrypt message:", e);
+          console.error("[ObfuscationPlugin] Encrypted body was:", encryptedBody);
           data.__encrypted = true;
         }
       } else {
+        console.log("[ObfuscationPlugin] No secret or invalid encrypted body");
         data.__encrypted = true;
       }
 
@@ -194,7 +212,7 @@ export function applyPatches() {
     });
   };
 
-  setTimeout(reprocessExistingMessages, 500);
+  setTimeout(reprocessExistingMessages, 1000);
 
   return () => patches.forEach((unpatch) => unpatch());
 }
