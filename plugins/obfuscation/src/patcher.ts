@@ -54,7 +54,7 @@ export function applyPatches() {
     })
   );
 
-  // Patch RowManager for message rendering - ALWAYS process incoming messages
+  // Improved RowManager patch with better content parsing
   patches.push(
     before("generate", RowManager.prototype, ([data]) => {
       if (data.rowType !== 1) return;
@@ -65,29 +65,29 @@ export function applyPatches() {
       // Check if message has our emoji indicator
       if (!hasObfuscationEmoji(content)) return;
 
-      const messageId = `${message.channel_id}-${message.id}`;
-      
-      // Extract marker from the wrapped URL
+      // Extract marker and encrypted content more reliably
       const markerMatch = content.match(EMOJI_REGEX);
-      const marker = markerMatch ? extractMarkerFromUrl(markerMatch[0]) : null;
+      if (!markerMatch) return;
+
+      const wrappedEmojiUrl = markerMatch[0];
+      const marker = extractMarkerFromUrl(wrappedEmojiUrl);
       
       if (!marker) return;
 
-      // Extract the encrypted body (everything after the wrapped emoji URL)
-      const wrappedEmojiUrl = markerMatch[0];
-      const encryptedBody = content.slice(content.indexOf(wrappedEmojiUrl) + wrappedEmojiUrl.length).trim();
+      // More robust extraction of encrypted content
+      const contentAfterEmoji = content.substring(content.indexOf(wrappedEmojiUrl) + wrappedEmojiUrl.length);
+      const encryptedBody = contentAfterEmoji.trim();
 
       // If we have the secret, try to decrypt
       if (vstorage.secret && encryptedBody) {
         try {
           const decoded = unscramble(encryptedBody, vstorage.secret);
           // Successfully decoded - replace content with decrypted version
-          // Use the same wrapped emoji URL but now the content is decrypted
           message.content = `${wrappedEmojiUrl} ${decoded}`;
-          content = message.content; // Update local content variable
           data.__decrypted = true;
         } catch (e) {
           // Failed to decrypt with our key, leave as encrypted
+          console.error("[ObfuscationPlugin] Failed to decrypt message:", e);
           data.__encrypted = true;
         }
       } else {
@@ -95,18 +95,13 @@ export function applyPatches() {
       }
 
       // Process the wrapped emoji URL to render as actual emoji
-      if (content && hasObfuscationEmoji(content)) {
-        // Extract the actual URL from the wrapped version for processing
-        const actualUrl = wrappedEmojiUrl.slice(1, -1); // Remove < and >
-        // Replace the wrapped URL with the actual URL for emoji rendering
-        const processedContent = content.replace(wrappedEmojiUrl, ` ${actualUrl} `);
-        message.content = processedContent;
-        data.__realmoji = true;
-      }
+      const actualUrl = wrappedEmojiUrl.slice(1, -1); // Remove < and >
+      message.content = message.content.replace(wrappedEmojiUrl, ` ${actualUrl} `);
+      data.__realmoji = true;
     })
   );
 
-  // Additional patch to render the emoji URL as a custom emoji component
+  // Improved emoji rendering patch
   patches.push(
     after("generate", RowManager.prototype, ([data], row) => {
       if (data.rowType !== 1 || data.__realmoji !== true) return;
@@ -139,7 +134,7 @@ export function applyPatches() {
     })
   );
 
-  // Also patch getMessage - ALWAYS process incoming messages
+  // Improved getMessage patch
   patches.push(
     after("getMessage", MessageStore, (args, message) => {
       if (!message) return message;
@@ -149,20 +144,23 @@ export function applyPatches() {
 
       // Extract marker and encrypted body from wrapped URL
       const markerMatch = content.match(EMOJI_REGEX);
-      const marker = markerMatch ? extractMarkerFromUrl(markerMatch[0]) : null;
+      if (!markerMatch) return message;
+
+      const wrappedEmojiUrl = markerMatch[0];
+      const marker = extractMarkerFromUrl(wrappedEmojiUrl);
       
       if (!marker) return message;
 
-      const wrappedEmojiUrl = markerMatch[0];
-      const encryptedBody = content.slice(content.indexOf(wrappedEmojiUrl) + wrappedEmojiUrl.length).trim();
+      const contentAfterEmoji = content.substring(content.indexOf(wrappedEmojiUrl) + wrappedEmojiUrl.length);
+      const encryptedBody = contentAfterEmoji.trim();
 
       // If we have the secret, try to decrypt
       if (vstorage.secret && encryptedBody) {
         try {
           const decoded = unscramble(encryptedBody, vstorage.secret);
           message.content = `${wrappedEmojiUrl} ${decoded}`;
-        } catch {
-          // Leave as encrypted if decryption fails
+        } catch (e) {
+          console.error("[ObfuscationPlugin] Failed to decrypt in getMessage:", e);
         }
       }
 
@@ -170,28 +168,34 @@ export function applyPatches() {
     })
   );
 
-  // Process existing messages by forcing a re-render - ALWAYS process
+  // Improved message reprocessing with error handling
   const reprocessExistingMessages = () => {
     console.log("[ObfuscationPlugin] Reprocessing existing messages...");
 
-    const channels = MessageStore.getMutableMessages?.() ?? {};
+    try {
+      const channels = MessageStore.getMutableMessages?.() ?? {};
 
-    Object.entries(channels).forEach(([channelId, channelMessages]: [string, any]) => {
-      if (channelMessages && typeof channelMessages === 'object') {
-        Object.values(channelMessages).forEach((message: any) => {
-          if (hasObfuscationEmoji(message?.content)) {
-            FluxDispatcher.dispatch({
-              type: "MESSAGE_UPDATE",
-              message: message,
-              log_edit: false,
-            });
-          }
-        });
-      }
-    });
+      Object.entries(channels).forEach(([channelId, channelMessages]: [string, any]) => {
+        if (channelMessages && typeof channelMessages === 'object') {
+          Object.values(channelMessages).forEach((message: any) => {
+            if (hasObfuscationEmoji(message?.content)) {
+              // Create a clean copy to avoid mutation issues
+              const cleanMessage = { ...message };
+              FluxDispatcher.dispatch({
+                type: "MESSAGE_UPDATE",
+                message: cleanMessage,
+                log_edit: false,
+              });
+            }
+          });
+        }
+      });
+    } catch (e) {
+      console.error("[ObfuscationPlugin] Error reprocessing messages:", e);
+    }
   };
 
-  setTimeout(reprocessExistingMessages, 500);
+  setTimeout(reprocessExistingMessages, 1000);
 
   return () => patches.forEach(unpatch => unpatch());
 }
