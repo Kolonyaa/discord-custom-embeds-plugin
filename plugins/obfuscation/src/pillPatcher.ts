@@ -2,7 +2,7 @@ import { findByName } from "@vendetta/metro";
 import { React } from "@vendetta/metro/common";
 import { after } from "@vendetta/patcher";
 import { findInReactTree } from "@vendetta/utils";
-
+import { vstorage } from "../storage";
 import FloatingPill from "../components/FloatingPill";
 
 const ChatInputGuardWrapper = findByName("ChatInputGuardWrapper", false);
@@ -10,6 +10,7 @@ const JumpToPresentButton = findByName("JumpToPresentButton", false);
 
 export default () => {
   const patches: (() => void)[] = [];
+  let forceUpdateKey = 0;
 
   patches.push(
     after("default", ChatInputGuardWrapper, (_, ret) => {
@@ -20,10 +21,32 @@ export default () => {
       
       if (!children) return;
 
-      // Add the floating pill to the chat input
-      children.unshift(React.createElement(FloatingPill));
+      // Remove any existing pill first
+      const existingPillIndex = children.findIndex(child => 
+        child?.type?.name === "FloatingPill" || child?.type?.displayName === "FloatingPill"
+      );
+      if (existingPillIndex !== -1) {
+        children.splice(existingPillIndex, 1);
+      }
+
+      // Add the floating pill with a key that changes when enabled state changes
+      children.unshift(
+        React.createElement(FloatingPill, {
+          key: `obfuscation-pill-${vstorage.enabled}-${forceUpdateKey}`
+        })
+      );
     })
   );
+
+  // Listen for storage changes and force re-render
+  const originalEnabled = vstorage.enabled;
+  const interval = setInterval(() => {
+    if (vstorage.enabled !== originalEnabled) {
+      forceUpdateKey++;
+      // This will force the ChatInputGuardWrapper to re-render
+      FluxDispatcher.dispatch({ type: "UPDATE_TEXT_INPUT" });
+    }
+  }, 100);
 
   // Adjust the JumpToPresentButton position to avoid overlap
   patches.push(
@@ -38,6 +61,7 @@ export default () => {
   );
 
   return () => {
+    clearInterval(interval);
     for (const x of patches) x();
   };
 };
