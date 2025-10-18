@@ -11,11 +11,11 @@ const { getCustomEmojiById } = findByStoreName("EmojiStore");
 
 // Base emoji URL without marker
 const BASE_EMOJI_URL = "https://cdn.discordapp.com/emojis/1413171773284810883.webp?size=48&quality=lossless&name=blowjob4";
-const EMOJI_REGEX = /\[Obfuscation\]\(<https:\/\/cdn\.discordapp\.com\/emojis\/1413171773284810883\.webp\?size=48&quality=lossless&name=blowjob4(&marker=[^>&\s]+)>\)/;
+const EMOJI_REGEX = /<https:\/\/cdn\.discordapp\.com\/emojis\/1413171773284810883\.webp\?size=48&quality=lossless&name=blowjob4(&marker=[^>&\s]+)>/;
 
 // Helper functions to work with marker URLs
 function createEmojiUrlWithMarker(marker) {
-  return `[Obfuscation](<${BASE_EMOJI_URL}&marker=${encodeURIComponent(marker)}>)`;
+  return `<${BASE_EMOJI_URL}&marker=${encodeURIComponent(marker)}>`;
 }
 
 function extractMarkerFromUrl(url) {
@@ -45,7 +45,7 @@ export function applyPatches() {
 
       try {
         const scrambled = scramble(content, vstorage.secret);
-        // Add markdown link with emoji URL before the encrypted content
+        // Add wrapped emoji URL with marker before the encrypted content
         const emojiWithMarker = createEmojiUrlWithMarker(vstorage.marker);
         msg.content = `${emojiWithMarker} ${scrambled}`;
       } catch (e) {
@@ -67,23 +67,24 @@ export function applyPatches() {
 
       const messageId = `${message.channel_id}-${message.id}`;
       
-      // Extract marker from the markdown link
+      // Extract marker from the wrapped URL
       const markerMatch = content.match(EMOJI_REGEX);
       const marker = markerMatch ? extractMarkerFromUrl(markerMatch[0]) : null;
       
       if (!marker) return;
 
-      // Extract the encrypted body (everything after the markdown link)
-      const markdownLink = markerMatch[0];
-      const encryptedBody = content.slice(content.indexOf(markdownLink) + markdownLink.length).trim();
+      // Extract the encrypted body (everything after the wrapped emoji URL)
+      const wrappedEmojiUrl = markerMatch[0];
+      const encryptedBody = content.slice(content.indexOf(wrappedEmojiUrl) + wrappedEmojiUrl.length).trim();
 
       // If we have the secret, try to decrypt
       if (vstorage.secret && encryptedBody) {
         try {
           const decoded = unscramble(encryptedBody, vstorage.secret);
-          // Successfully decoded - we'll keep the markdown link but process it for emoji rendering
-          message.content = `${markdownLink} ${decoded}`;
-          content = message.content;
+          // Successfully decoded - replace content with decrypted version
+          // Use the same wrapped emoji URL but now the content is decrypted
+          message.content = `${wrappedEmojiUrl} ${decoded}`;
+          content = message.content; // Update local content variable
           data.__decrypted = true;
         } catch (e) {
           // Failed to decrypt with our key, leave as encrypted
@@ -93,8 +94,15 @@ export function applyPatches() {
         data.__encrypted = true;
       }
 
-      // Mark this message for emoji processing
-      data.__realmoji = true;
+      // Process the wrapped emoji URL to render as actual emoji
+      if (content && hasObfuscationEmoji(content)) {
+        // Extract the actual URL from the wrapped version for processing
+        const actualUrl = wrappedEmojiUrl.slice(1, -1); // Remove < and >
+        // Replace the wrapped URL with the actual URL for emoji rendering
+        const processedContent = content.replace(wrappedEmojiUrl, ` ${actualUrl} `);
+        message.content = processedContent;
+        data.__realmoji = true;
+      }
     })
   );
 
@@ -106,63 +114,25 @@ export function applyPatches() {
       const message = row?.message;
       if (!message || !message.content) return;
 
-      // Process the content to convert markdown link to custom emoji
+      // Process the content array to convert emoji URLs to custom emoji components
       if (Array.isArray(message.content)) {
         for (let i = 0; i < message.content.length; i++) {
           const el = message.content[i];
-          
-          // Look for text nodes that contain our markdown link
-          if (el.type === "text" && el.content?.includes("[Obfuscation](")) {
-            const markdownMatch = el.content.match(EMOJI_REGEX);
-            if (markdownMatch) {
-              const markdownLink = markdownMatch[0];
-              const urlMatch = markdownLink.match(/<([^>]+)>/);
-              const actualUrl = urlMatch ? urlMatch[1] : BASE_EMOJI_URL;
-              
-              // Extract emoji ID from URL
-              const emojiMatch = actualUrl.match(/\/emojis\/(\d+)\.webp/);
-              if (!emojiMatch) continue;
-              
-              const emojiId = emojiMatch[1];
-              const emoji = getCustomEmojiById(emojiId);
-              const displayUrl = `${actualUrl.split('?')[0]}?size=128`;
-              
-              // Split the text around the markdown link
-              const parts = el.content.split(markdownLink);
-              
-              // Create new content array with emoji component
-              const newContent = [];
-              
-              // Add text before the markdown link
-              if (parts[0]) {
-                newContent.push({
-                  type: "text",
-                  content: parts[0]
-                });
-              }
-              
-              // Add the emoji component
-              newContent.push({
-                type: "customEmoji",
-                id: emojiId,
-                alt: emoji?.name ?? "🔒",
-                src: displayUrl,
-                frozenSrc: displayUrl.replace("webp", "png"),
-                jumboable: false,
-              });
-              
-              // Add text after the markdown link
-              if (parts[1]) {
-                newContent.push({
-                  type: "text", 
-                  content: parts[1]
-                });
-              }
-              
-              // Replace the single text element with our new array
-              message.content.splice(i, 1, ...newContent);
-              break; // We found and processed our markdown link
-            }
+          if (el.type === "link" && el.target?.includes(BASE_EMOJI_URL)) {
+            const match = el.target.match(/https:\/\/cdn\.discordapp\.com\/emojis\/(\d+)\.webp/);
+            if (!match) continue;
+            
+            const url = `${match[0]}?size=128`;
+            const emoji = getCustomEmojiById(match[1]);
+
+            message.content[i] = {
+              type: "customEmoji",
+              id: match[1],
+              alt: emoji?.name ?? "<obfuscation-emoji>",
+              src: url,
+              frozenSrc: url.replace("gif", "webp"),
+              jumboable: false,
+            };
           }
         }
       }
@@ -177,20 +147,20 @@ export function applyPatches() {
       const content = message.content;
       if (!hasObfuscationEmoji(content)) return message;
 
-      // Extract marker and encrypted body from markdown link
+      // Extract marker and encrypted body from wrapped URL
       const markerMatch = content.match(EMOJI_REGEX);
       const marker = markerMatch ? extractMarkerFromUrl(markerMatch[0]) : null;
       
       if (!marker) return message;
 
-      const markdownLink = markerMatch[0];
-      const encryptedBody = content.slice(content.indexOf(markdownLink) + markdownLink.length).trim();
+      const wrappedEmojiUrl = markerMatch[0];
+      const encryptedBody = content.slice(content.indexOf(wrappedEmojiUrl) + wrappedEmojiUrl.length).trim();
 
       // If we have the secret, try to decrypt
       if (vstorage.secret && encryptedBody) {
         try {
           const decoded = unscramble(encryptedBody, vstorage.secret);
-          message.content = `${markdownLink} ${decoded}`;
+          message.content = `${wrappedEmojiUrl} ${decoded}`;
         } catch {
           // Leave as encrypted if decryption fails
         }
