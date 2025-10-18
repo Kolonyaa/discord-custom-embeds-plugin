@@ -11,17 +11,17 @@ const RowManager = findByName("RowManager");
 // Base emoji URL
 const BASE_EMOJI_URL = "https://cdn.discordapp.com/emojis/1429170621891477615.webp?size=48&quality=lossless";
 
-// Simple check for our emoji
+// Check for wrapped emoji URL
 function hasObfuscationEmoji(content: string): boolean {
-  return content?.includes(BASE_EMOJI_URL);
+  return content?.includes(`<${BASE_EMOJI_URL}>`);
 }
 
 export function applyPatches() {
   const patches = [];
 
-  console.log("[ObfuscationPlugin] Applying EMOJI patches...");
+  console.log("[ObfuscationPlugin] Applying WRAPPED EMOJI patches...");
 
-  // Outgoing messages - add emoji URL
+  // Outgoing messages - add wrapped emoji URL
   patches.push(
     before("sendMessage", Messages, (args) => {
       const msg = args[1];
@@ -29,7 +29,7 @@ export function applyPatches() {
 
       if (!vstorage.enabled) return;
       if (!content || !vstorage.secret) return;
-      if (hasObfuscationEmoji(content)) return; // Don't double-encrypt
+      if (hasObfuscationEmoji(content)) return;
 
       console.log("[ObfuscationPlugin] Sending message:", content);
 
@@ -37,8 +37,8 @@ export function applyPatches() {
         const scrambled = scramble(content, vstorage.secret);
         console.log("[ObfuscationPlugin] Scrambled to:", scrambled);
         
-        // Add simple emoji URL before scrambled content
-        msg.content = `${BASE_EMOJI_URL} ${scrambled}`;
+        // Add WRAPPED emoji URL before scrambled content
+        msg.content = `<${BASE_EMOJI_URL}> ${scrambled}`;
       } catch (e) {
         console.error("[ObfuscationPlugin] Failed to scramble:", e);
       }
@@ -53,14 +53,15 @@ export function applyPatches() {
 
       const content = data.message.content;
       
-      // Only process if it contains our emoji URL
+      // Only process if it contains our WRAPPED emoji URL
       if (!hasObfuscationEmoji(content)) return;
 
-      console.log("[ObfuscationPlugin] Processing emoji message:", content);
+      console.log("[ObfuscationPlugin] Processing wrapped emoji message:", content);
 
-      // Extract encrypted body (everything after emoji URL)
-      const emojiIndex = content.indexOf(BASE_EMOJI_URL);
-      const encryptedBody = content.slice(emojiIndex + BASE_EMOJI_URL.length).trim();
+      // Extract encrypted body (everything after WRAPPED emoji URL)
+      const wrappedUrl = `<${BASE_EMOJI_URL}>`;
+      const emojiIndex = content.indexOf(wrappedUrl);
+      const encryptedBody = content.slice(emojiIndex + wrappedUrl.length).trim();
 
       if (!vstorage.secret || !encryptedBody) {
         console.log("[ObfuscationPlugin] No secret or encrypted body");
