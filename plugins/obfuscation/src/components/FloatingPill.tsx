@@ -29,7 +29,7 @@ const styles = stylesheet.createThemedStyleSheet({
     color: "#ffb3d4",
   },
   disabled: {
-    color: "semanticColors.TEXT_MUTED",
+    color: semanticColors.TEXT_MUTED,
   },
 });
 
