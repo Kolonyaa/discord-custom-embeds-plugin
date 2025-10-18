@@ -54,54 +54,92 @@ export function applyPatches() {
     })
   );
 
-  // Improved RowManager patch with better content parsing
+  // Patch RowManager for message rendering - ALWAYS process incoming messages
   patches.push(
-    before("generate", RowManager.prototype, ([data]) => {
+    after("generate", RowManager.prototype, ([data], row) => {
       if (data.rowType !== 1) return;
-
-      const message = data.message;
-      let content = message?.content;
-
-      // Check if message has our emoji indicator
-      if (!hasObfuscationEmoji(content)) return;
-
-      // Extract marker and encrypted content more reliably
-      const markerMatch = content.match(EMOJI_REGEX);
-      if (!markerMatch) return;
-
-      const wrappedEmojiUrl = markerMatch[0];
-      const marker = extractMarkerFromUrl(wrappedEmojiUrl);
       
-      if (!marker) return;
+      const message = row?.message;
+      if (!message || !message.content) return;
 
-      // More robust extraction of encrypted content
-      const contentAfterEmoji = content.substring(content.indexOf(wrappedEmojiUrl) + wrappedEmojiUrl.length);
-      const encryptedBody = contentAfterEmoji.trim();
+      // Process the content array to convert emoji URLs to custom emoji components
+      if (Array.isArray(message.content)) {
+        const newContent = [];
+        
+        for (let i = 0; i < message.content.length; i++) {
+          const el = message.content[i];
+          
+          // Handle obfuscation emoji
+          if (el.type === "link" && el.target?.includes(BASE_EMOJI_URL)) {
+            const match = el.target.match(/https:\/\/cdn\.discordapp\.com\/emojis\/(\d+)\.webp/);
+            if (!match) continue;
+            
+            const url = `${match[0]}?size=128`;
+            const emoji = getCustomEmojiById(match[1]);
 
-      // If we have the secret, try to decrypt
-      if (vstorage.secret && encryptedBody) {
-        try {
-          const decoded = unscramble(encryptedBody, vstorage.secret);
-          // Successfully decoded - replace content with decrypted version
-          message.content = `${wrappedEmojiUrl} ${decoded}`;
-          data.__decrypted = true;
-        } catch (e) {
-          // Failed to decrypt with our key, leave as encrypted
-          console.error("[ObfuscationPlugin] Failed to decrypt message:", e);
-          data.__encrypted = true;
+            newContent.push({
+              type: "customEmoji",
+              id: match[1],
+              alt: emoji?.name ?? "<obfuscation-emoji>",
+              src: url,
+              frozenSrc: url.replace("gif", "webp"),
+              jumboable: false,
+            });
+          }
+          // Handle external emoji URLs in text content
+          else if (el.type === "text" && typeof el.content === "string") {
+            const text = el.content;
+            const emojiRegex = /(https:\/\/cdn\.discordapp\.com\/emojis\/(\d+)\.(webp|gif|png|jpg)(?:\?[^&\s]*)?)/g;
+            let lastIndex = 0;
+            let match;
+
+            while ((match = emojiRegex.exec(text)) !== null) {
+              // Add text before the emoji URL
+              if (match.index > lastIndex) {
+                newContent.push({
+                  type: "text",
+                  content: text.slice(lastIndex, match.index)
+                });
+              }
+
+              // Add the emoji as a custom emoji component
+              const emojiId = match[2];
+              const extension = match[3];
+              const isAnimated = extension === "gif";
+              const url = `https://cdn.discordapp.com/emojis/${emojiId}.${isAnimated ? 'gif' : 'webp'}?size=128`;
+              
+              newContent.push({
+                type: "customEmoji",
+                id: emojiId,
+                alt: `:${emojiId}:`,
+                src: url,
+                frozenSrc: isAnimated ? url.replace("gif", "webp") : url,
+                jumboable: false,
+              });
+
+              lastIndex = match.index + match[0].length;
+            }
+
+            // Add remaining text after the last emoji
+            if (lastIndex < text.length) {
+              newContent.push({
+                type: "text",
+                content: text.slice(lastIndex)
+              });
+            }
+          } else {
+            // Keep other elements as-is
+            newContent.push(el);
+          }
         }
-      } else {
-        data.__encrypted = true;
-      }
 
-      // Process the wrapped emoji URL to render as actual emoji
-      const actualUrl = wrappedEmojiUrl.slice(1, -1); // Remove < and >
-      message.content = message.content.replace(wrappedEmojiUrl, ` ${actualUrl} `);
-      data.__realmoji = true;
+        // Update the message content with processed content
+        message.content = newContent;
+      }
     })
   );
 
-  // Improved emoji rendering patch
+  // Additional patch to render the emoji URL as a custom emoji component
   patches.push(
     after("generate", RowManager.prototype, ([data], row) => {
       if (data.rowType !== 1 || data.__realmoji !== true) return;
@@ -134,7 +172,7 @@ export function applyPatches() {
     })
   );
 
-  // Improved getMessage patch
+  // Also patch getMessage - ALWAYS process incoming messages
   patches.push(
     after("getMessage", MessageStore, (args, message) => {
       if (!message) return message;
@@ -144,23 +182,20 @@ export function applyPatches() {
 
       // Extract marker and encrypted body from wrapped URL
       const markerMatch = content.match(EMOJI_REGEX);
-      if (!markerMatch) return message;
-
-      const wrappedEmojiUrl = markerMatch[0];
-      const marker = extractMarkerFromUrl(wrappedEmojiUrl);
+      const marker = markerMatch ? extractMarkerFromUrl(markerMatch[0]) : null;
       
       if (!marker) return message;
 
-      const contentAfterEmoji = content.substring(content.indexOf(wrappedEmojiUrl) + wrappedEmojiUrl.length);
-      const encryptedBody = contentAfterEmoji.trim();
+      const wrappedEmojiUrl = markerMatch[0];
+      const encryptedBody = content.slice(content.indexOf(wrappedEmojiUrl) + wrappedEmojiUrl.length).trim();
 
       // If we have the secret, try to decrypt
       if (vstorage.secret && encryptedBody) {
         try {
           const decoded = unscramble(encryptedBody, vstorage.secret);
           message.content = `${wrappedEmojiUrl} ${decoded}`;
-        } catch (e) {
-          console.error("[ObfuscationPlugin] Failed to decrypt in getMessage:", e);
+        } catch {
+          // Leave as encrypted if decryption fails
         }
       }
 
@@ -168,34 +203,28 @@ export function applyPatches() {
     })
   );
 
-  // Improved message reprocessing with error handling
+  // Process existing messages by forcing a re-render - ALWAYS process
   const reprocessExistingMessages = () => {
     console.log("[ObfuscationPlugin] Reprocessing existing messages...");
 
-    try {
-      const channels = MessageStore.getMutableMessages?.() ?? {};
+    const channels = MessageStore.getMutableMessages?.() ?? {};
 
-      Object.entries(channels).forEach(([channelId, channelMessages]: [string, any]) => {
-        if (channelMessages && typeof channelMessages === 'object') {
-          Object.values(channelMessages).forEach((message: any) => {
-            if (hasObfuscationEmoji(message?.content)) {
-              // Create a clean copy to avoid mutation issues
-              const cleanMessage = { ...message };
-              FluxDispatcher.dispatch({
-                type: "MESSAGE_UPDATE",
-                message: cleanMessage,
-                log_edit: false,
-              });
-            }
-          });
-        }
-      });
-    } catch (e) {
-      console.error("[ObfuscationPlugin] Error reprocessing messages:", e);
-    }
+    Object.entries(channels).forEach(([channelId, channelMessages]: [string, any]) => {
+      if (channelMessages && typeof channelMessages === 'object') {
+        Object.values(channelMessages).forEach((message: any) => {
+          if (hasObfuscationEmoji(message?.content)) {
+            FluxDispatcher.dispatch({
+              type: "MESSAGE_UPDATE",
+              message: message,
+              log_edit: false,
+            });
+          }
+        });
+      }
+    });
   };
 
-  setTimeout(reprocessExistingMessages, 1000);
+  setTimeout(reprocessExistingMessages, 500);
 
   return () => patches.forEach(unpatch => unpatch());
 }
