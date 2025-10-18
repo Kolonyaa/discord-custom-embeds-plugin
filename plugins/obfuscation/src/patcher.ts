@@ -10,15 +10,17 @@ const RowManager = findByName("RowManager");
 const { getCustomEmojiById } = findByStoreName("EmojiStore");
 
 // Constants for the emoji indicator
-const EMOJI_URL = "https://cdn.discordapp.com/emojis/1429139654137090220.webp?size=48&quality=lossless&name=unlocked";
+const EMOJI_URL = "https://cdn.discordapp.com/emojis/1413171773284810883.webp?size=48&quality=lossless&name=blowjob4";
 const EMOJI_REGEX = /https:\/\/cdn.discordapp.com\/emojis\/(\d+)\.\w+/;
-const INVISIBLE_PREFIX = "\u200B\u200B\u200B"; // Zero-width spaces
-const VISIBLE_INDICATOR = `${INVISIBLE_PREFIX}${EMOJI_URL}${INVISIBLE_PREFIX}`;
+
+// Invisible character sequences to hide the emoji URL from non-plugin users
+const ZERO_WIDTH_SPACE = "\u200B";
+const INVISIBLE_SEPARATOR = ZERO_WIDTH_SPACE + ZERO_WIDTH_SPACE;
 
 export function applyPatches() {
   const patches = [];
 
-  // Outgoing messages - add invisible emoji indicator
+  // Outgoing messages - add hidden visual indicator
   patches.push(
     before("sendMessage", Messages, (args) => {
       const msg = args[1];
@@ -27,14 +29,14 @@ export function applyPatches() {
       // Only skip if obfuscation is disabled (this controls SENDING only)
       if (!vstorage.enabled) return;
 
-      if (!content || content.includes(VISIBLE_INDICATOR) || content.startsWith(`[🔐${vstorage.marker}]`) || content.startsWith(`[🔓${vstorage.marker}]`) || !vstorage.secret) {
+      if (!content || content.includes(INVISIBLE_SEPARATOR + EMOJI_URL) || content.startsWith(`[🔐${vstorage.marker}]`) || content.startsWith(`[🔓${vstorage.marker}]`) || !vstorage.secret) {
         return;
       }
 
       try {
         const scrambled = scramble(content, vstorage.secret);
-        // Add invisible emoji indicator before the marker
-        msg.content = `${VISIBLE_INDICATOR}[🔐${vstorage.marker}] ${scrambled}`;
+        // Add emoji URL hidden with zero-width spaces before the marker
+        msg.content = `${INVISIBLE_SEPARATOR}${EMOJI_URL}${INVISIBLE_SEPARATOR} [🔐${vstorage.marker}] ${scrambled}`;
       } catch (e) {
         console.error("[ObfuscationPlugin] Failed to scramble message:", e);
       }
@@ -49,12 +51,12 @@ export function applyPatches() {
       const message = data.message;
       let content = message?.content;
 
-      // Check if message has our invisible emoji indicator and lock marker
-      const hasEmojiIndicator = content?.includes(VISIBLE_INDICATOR);
+      // Check if message has our hidden emoji indicator and lock marker
+      const hasHiddenEmoji = content?.includes(INVISIBLE_SEPARATOR + EMOJI_URL);
       const hasLockMarker = content?.includes(`[🔐${vstorage.marker}]`);
       const hasUnlockMarker = content?.includes(`[🔓${vstorage.marker}]`);
 
-      if (!hasEmojiIndicator || (!hasLockMarker && !hasUnlockMarker)) return;
+      if (!hasHiddenEmoji || (!hasLockMarker && !hasUnlockMarker)) return;
 
       const messageId = `${message.channel_id}-${message.id}`;
       
@@ -68,7 +70,7 @@ export function applyPatches() {
           try {
             const decoded = unscramble(encryptedBody, vstorage.secret);
             // Successfully decoded with our key - replace with unlocked version
-            message.content = `${VISIBLE_INDICATOR}[🔓${vstorage.marker}] ${decoded}`;
+            message.content = `${INVISIBLE_SEPARATOR}${EMOJI_URL}${INVISIBLE_SEPARATOR} [🔓${vstorage.marker}] ${decoded}`;
             content = message.content; // Update local content variable
           } catch {
             // Failed to decrypt with our key, leave as locked version
@@ -76,12 +78,13 @@ export function applyPatches() {
         }
       }
 
-      // Process the invisible emoji indicator to render as actual emoji
-      if (content && content.includes(VISIBLE_INDICATOR)) {
-        // Extract just the emoji URL part for rendering
-        const emojiUrl = EMOJI_URL;
-        // Replace the invisible indicator with the emoji URL for rendering
-        const processedContent = content.replace(VISIBLE_INDICATOR, ` ${emojiUrl} `);
+      // Process the hidden emoji URL to render as actual emoji
+      if (content && content.includes(INVISIBLE_SEPARATOR + EMOJI_URL)) {
+        // Remove the invisible separators and replace with space for proper emoji rendering
+        const processedContent = content.replace(
+          INVISIBLE_SEPARATOR + EMOJI_URL + INVISIBLE_SEPARATOR, 
+          ` ${EMOJI_URL} `
+        );
         message.content = processedContent;
         data.__realmoji = true;
       }
@@ -127,7 +130,9 @@ export function applyPatches() {
       if (!message) return message;
 
       const content = message.content;
-      if (!content?.includes(VISIBLE_INDICATOR) || (!content?.includes(`[🔐${vstorage.marker}]`) && !content?.includes(`[🔓${vstorage.marker}]`))) {
+      const hasHiddenEmoji = content?.includes(INVISIBLE_SEPARATOR + EMOJI_URL);
+      
+      if (!hasHiddenEmoji || (!content?.includes(`[🔐${vstorage.marker}]`) && !content?.includes(`[🔓${vstorage.marker}]`))) {
         return message;
       }
 
@@ -139,7 +144,7 @@ export function applyPatches() {
         if (vstorage.secret) {
           try {
             const decoded = unscramble(encryptedBody, vstorage.secret);
-            message.content = `${VISIBLE_INDICATOR}[🔓${vstorage.marker}] ${decoded}`;
+            message.content = `${INVISIBLE_SEPARATOR}${EMOJI_URL}${INVISIBLE_SEPARATOR} [🔓${vstorage.marker}] ${decoded}`;
           } catch {
             // Leave as locked if decryption fails
           }
@@ -159,7 +164,7 @@ export function applyPatches() {
     Object.entries(channels).forEach(([channelId, channelMessages]: [string, any]) => {
       if (channelMessages && typeof channelMessages === 'object') {
         Object.values(channelMessages).forEach((message: any) => {
-          if (message?.content?.includes(VISIBLE_INDICATOR) && 
+          if (message?.content?.includes(INVISIBLE_SEPARATOR + EMOJI_URL) && 
               (message.content.includes(`[🔐${vstorage.marker}]`) || message.content.includes(`[🔓${vstorage.marker}]`))) {
             FluxDispatcher.dispatch({
               type: "MESSAGE_UPDATE",
