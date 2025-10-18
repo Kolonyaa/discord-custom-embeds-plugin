@@ -1,3 +1,4 @@
+// patcher.ts
 import { findByProps, findByStoreName, findByName } from "@vendetta/metro";
 import { before, after } from "@vendetta/patcher";
 import { FluxDispatcher } from "@vendetta/metro/common";
@@ -6,7 +7,7 @@ import { vstorage } from "./storage";
 import { scramble, unscramble } from "./obfuscationUtils";
 
 /* -------------------------
-   Existing message patches
+   Message obfuscation (unchanged)
    ------------------------- */
 
 const Messages = findByProps("sendMessage", "editMessage", "receiveMessage");
@@ -35,72 +36,54 @@ function reprocessMessagesLater() {
 }
 
 /* -------------------------
-   Helpers for input patch
+   Helpers
    ------------------------- */
 
-/**
- * Given a module returned by findByName or findByProps, normalize to component constructor
- * Many plugins expose a wrapper object with `.type` pointing to the component (see example you found).
- */
+/** Normalize possible module export shapes to a component constructor */
 function normalizeToComponent(mod: any) {
   if (!mod) return null;
   if (typeof mod === "function") return mod;
   if (mod.type && typeof mod.type === "function") return mod.type;
-  // some modules export default
   if (mod.default && typeof mod.default === "function") return mod.default;
-  return mod;
-}
-
-/**
- * Return true if this React element looks like a TextInput or input wrapper:
- * heuristics: props contain onChangeText OR multiline OR placeholder
- */
-function looksLikeTextInput(elem: any): boolean {
-  if (!elem || !elem.props) return false;
-  const p = elem.props;
-  return "onChangeText" in p || "multiline" in p || "placeholder" in p || "value" in p;
-}
-
-/**
- * Recursively traverse the React element tree and attempt to find a node to inject style into.
- * When a node that matches looksLikeTextInput is found, clone it with merged style and return
- * the modified root (cloning along the path).
- *
- * If nothing matched, return null.
- */
-function injectStyleIntoTree(root: any, styleToInject: any): any | null {
-  if (!root) return null;
-
-  if (looksLikeTextInput(root)) {
-    const oldStyle = root.props?.style;
-    const mergedStyle = Array.isArray(oldStyle) ? [styleToInject, ...oldStyle] : [styleToInject, oldStyle].filter(Boolean);
-    return React.cloneElement(root, { style: mergedStyle });
-  }
-
-  // If leaf and not matching, nothing to do
-  if (!root.props || !root.props.children) return null;
-
-  const children = React.Children.toArray(root.props.children);
-  let didChange = false;
-  const newChildren = children.map((child: any) => {
-    // If child is a React element, try to inject
-    if (React.isValidElement(child)) {
-      const replaced = injectStyleIntoTree(child, styleToInject);
-      if (replaced) {
-        didChange = true;
-        return replaced;
-      } else {
-        return child;
-      }
-    }
-    return child;
-  });
-
-  if (didChange) {
-    return React.cloneElement(root, undefined, ...newChildren);
-  }
-
   return null;
+}
+
+/** Heuristic: does this props object look like a chat input props? */
+function propsLooksLikeInput(props: any) {
+  if (!props || typeof props !== "object") return false;
+  return (
+    "onChangeText" in props ||
+    "multiline" in props ||
+    "placeholder" in props ||
+    "value" in props ||
+    "canSendVoiceMessage" in props ||
+    "isAppLauncherEnabled" in props ||
+    "shouldShowGiftButton" in props
+  );
+}
+
+/** Merge/insert highlight style into props.style (array or object) */
+function injectHighlightIntoPropsStyle(props: any, highlightStyle: any) {
+  if (!props) return false;
+  try {
+    const s = props.style;
+    if (Array.isArray(s)) {
+      // push to end so existing styles win when colliding, or unshift if you prefer priority
+      s.push(highlightStyle);
+      props.style = s;
+      return true;
+    } else if (s && typeof s === "object") {
+      props.style = [s, highlightStyle];
+      return true;
+    } else {
+      // no style — set as array
+      props.style = [highlightStyle];
+      return true;
+    }
+  } catch (e) {
+    console.error("[ObfuscationPlugin] injectHighlightIntoPropsStyle err:", e);
+    return false;
+  }
 }
 
 /* -------------------------
@@ -108,34 +91,37 @@ function injectStyleIntoTree(root: any, styleToInject: any): any | null {
    ------------------------- */
 
 export function applyPatches() {
-  const patches: Array<() => void> = [];
+  const unpatches: Array<() => void> = [];
 
-  // Outgoing: scramble before sending
-  patches.push(
-    before("sendMessage", Messages, (args) => {
-      const msg = args[1];
-      const content = msg?.content;
-      if (
-        !content ||
-        content.startsWith(`[🔐${vstorage.marker}]`) ||
-        content.startsWith(`[🔓${vstorage.marker}]`) ||
-        !vstorage.enabled ||
-        !vstorage.secret
-      )
-        return;
+  // === Outgoing: scramble before sending ===
+  if (Messages) {
+    unpatches.push(
+      before("sendMessage", Messages, (args) => {
+        const msg = args[1];
+        const content = msg?.content;
+        if (
+          !content ||
+          content.startsWith(`[🔐${vstorage.marker}]`) ||
+          content.startsWith(`[🔓${vstorage.marker}]`) ||
+          !vstorage.enabled ||
+          !vstorage.secret
+        )
+          return;
+        try {
+          const scrambled = scramble(content, vstorage.secret);
+          msg.content = `[🔐${vstorage.marker}] ${scrambled}`;
+        } catch (e) {
+          console.error("[ObfuscationPlugin] Failed to scramble message:", e);
+        }
+      })
+    );
+  } else {
+    console.warn("[ObfuscationPlugin] Messages module not found; outgoing patch skipped.");
+  }
 
-      try {
-        const scrambled = scramble(content, vstorage.secret);
-        msg.content = `[🔐${vstorage.marker}] ${scrambled}`;
-      } catch (e) {
-        console.error("[ObfuscationPlugin] Failed to scramble message:", e);
-      }
-    })
-  );
-
-  // RowManager.generate: try to transparently decode if we have the secret
+  // === RowManager.generate ===
   if (RowManager && RowManager.prototype) {
-    patches.push(
+    unpatches.push(
       before("generate", RowManager.prototype, ([data]) => {
         if (data.rowType !== 1 || !vstorage.enabled) return;
         const message = data.message;
@@ -152,11 +138,13 @@ export function applyPatches() {
         }
       })
     );
+  } else {
+    console.warn("[ObfuscationPlugin] RowManager not found; incoming message patch skipped.");
   }
 
-  // MessageStore.getMessage: decode there too
+  // === MessageStore.getMessage ===
   if (MessageStore) {
-    patches.push(
+    unpatches.push(
       after("getMessage", MessageStore, (args, message) => {
         try {
           if (!message || !vstorage.enabled) return message;
@@ -177,16 +165,18 @@ export function applyPatches() {
         return message;
       })
     );
+  } else {
+    console.warn("[ObfuscationPlugin] MessageStore not found; getMessage patch skipped.");
   }
 
-  // Reprocess existing messages shortly after load
+  // reprocess existing messages a bit later
   setTimeout(reprocessMessagesLater, 500);
 
   /* -------------------------
-     Input highlighting logic
+     Input UI highlighting (props-mutation approach)
      ------------------------- */
 
-  // style to inject (green outline & subtle tint)
+  // highlight style to apply (tweak as you like)
   const highlightStyle = {
     borderWidth: 2,
     borderColor: "#34D399",
@@ -194,80 +184,151 @@ export function applyPatches() {
     backgroundColor: "rgba(52,211,153,0.06)",
   };
 
-  // Candidate names to try (include ones you mentioned + common ones)
-  const candidateNames = [
+  // Candidate names / fallbacks — include many options
+  const candidates = [
+    // common input components
     "ChannelTextArea",
     "ChannelTextInput",
     "MessageInput",
     "ChatFooter",
     "MessageComposer",
     "ChatInput",
-    "ChatInputSendButton",
+    "ChatInputSendButton", // sometimes exposes .type with a ref to the input
     "ChatInputActions",
     "TextInput",
   ];
 
-  // Try multiple strategies to find a component to patch
-  let foundAnyInput = false;
+  // Also check findByProps fallback
+  const fallbackByProps = findByProps("onChangeText", "multiline", "placeholder");
 
-  for (const name of candidateNames) {
+  // keep track of whether we actually patched something
+  let patchedAny = false;
+
+  // Patch each candidate if present and looks like a component or wrapper
+  for (const name of candidates) {
     try {
-      const raw = findByName(name) || findByProps(name);
+      const raw = findByName(name) || findByProps(name) || null;
       const comp = normalizeToComponent(raw);
-      if (!comp || !comp.prototype || !comp.prototype.render) continue;
-
-      // patch its render (after) so we can inspect the returned react element
-      patches.push(
-        after("render", comp.prototype, (args, res) => {
-          try {
-            // only highlight when enabled
-            if (!vstorage.enabled || !res) return res;
-
-            // 1) Try to inject into a TextInput-like child
-            const injected = injectStyleIntoTree(res, highlightStyle);
-            if (injected) {
-              foundAnyInput = true;
-              return injected;
+      if (!comp || !comp.prototype || typeof comp.prototype.render !== "function") {
+        // try if raw itself looks like a component container with .type
+        if (raw && raw.type && raw.type.prototype && typeof raw.type.prototype.render === "function") {
+          // we'll patch raw.type
+          const componentToPatch = raw.type;
+          const unpatcher = before("render", componentToPatch.prototype, (args) => {
+            try {
+              if (!vstorage.enabled) return;
+              const props = args[0];
+              if (!props || typeof props !== "object") return;
+              // If it looks like input props, inject style
+              if (propsLooksLikeInput(props)) {
+                if (injectHighlightIntoPropsStyle(props, highlightStyle)) {
+                  patchedAny = true;
+                }
+              }
+            } catch (e) {
+              console.error(`[ObfuscationPlugin] error in render patch (${name} .type):`, e);
             }
+          });
+          unpatches.push(unpatcher);
+          console.log(`[ObfuscationPlugin] patched (via raw.type) candidate: ${name}`);
+        } else {
+          // not a component; skip
+          // console.info(`[ObfuscationPlugin] candidate not a component: ${name}`);
+        }
+        continue;
+      }
 
-            // 2) fallback: merge into root props.style if it exists (some components accept style)
-            const oldStyle = res.props?.style;
-            const mergedStyle = Array.isArray(oldStyle)
-              ? [highlightStyle, ...oldStyle]
-              : [highlightStyle, oldStyle].filter(Boolean);
+      // Patch the component's render args (props) like the avatar example did
+      const unpatch = before("render", comp.prototype, (args) => {
+        try {
+          if (!vstorage.enabled) return;
+          const props = args[0];
+          if (!props || typeof props !== "object") return;
 
-            // If root has props, clone with merged style; otherwise leave unchanged
-            if (res.props) {
-              foundAnyInput = true;
-              return React.cloneElement(res, { style: mergedStyle });
+          // If this props already matches input heuristics, inject highlight
+          if (propsLooksLikeInput(props)) {
+            if (injectHighlightIntoPropsStyle(props, highlightStyle)) {
+              patchedAny = true;
             }
-
-            return res;
-          } catch (e) {
-            console.error(`[ObfuscationPlugin] render-patch (${name}) failed:`, e);
-            return res;
+            return;
           }
-        })
-      );
 
-      console.log(`[ObfuscationPlugin] installed render patch on candidate: ${name}`);
+          // Sometimes the input is nested deeper: check props.children to find child props objects to modify
+          // we only mutate direct children that look like input props (this mimics in-place wrapper edits)
+          const children = props.children;
+          if (Array.isArray(children)) {
+            for (let i = 0; i < children.length; i++) {
+              const c = children[i];
+              if (c && c.props && propsLooksLikeInput(c.props)) {
+                injectHighlightIntoPropsStyle(c.props, highlightStyle);
+                patchedAny = true;
+                return;
+              }
+            }
+          } else if (children && children.props && propsLooksLikeInput(children.props)) {
+            injectHighlightIntoPropsStyle(children.props, highlightStyle);
+            patchedAny = true;
+            return;
+          }
+
+          // If props.style is an array, we can append highlight unconditionally when present (less safe)
+          if (props.style && Array.isArray(props.style)) {
+            props.style.push(highlightStyle);
+            patchedAny = true;
+            return;
+          }
+        } catch (e) {
+          console.error(`[ObfuscationPlugin] error in render patch (${name}):`, e);
+        }
+      });
+
+      unpatches.push(unpatch);
+      console.log(`[ObfuscationPlugin] installed render-before patch on candidate: ${name}`);
     } catch (e) {
-      // ignore and continue
+      // ignore candidate errors
     }
   }
 
-  if (!foundAnyInput) {
-    console.warn("[ObfuscationPlugin] No input candidate was successfully patched. If Discord's client changed, try inspecting component names or enable diagnostics.");
+  // Merge the findByProps fallback (if not already patched)
+  if (fallbackByProps) {
+    const comp = normalizeToComponent(fallbackByProps);
+    if (comp && comp.prototype && typeof comp.prototype.render === "function") {
+      try {
+        const unpatch = before("render", comp.prototype, (args) => {
+          try {
+            if (!vstorage.enabled) return;
+            const props = args[0];
+            if (!props || typeof props !== "object") return;
+            if (propsLooksLikeInput(props)) {
+              if (injectHighlightIntoPropsStyle(props, highlightStyle)) {
+                patchedAny = true;
+              }
+            }
+          } catch (e) {
+            console.error("[ObfuscationPlugin] fallback render patch error:", e);
+          }
+        });
+        unpatches.push(unpatch);
+        console.log("[ObfuscationPlugin] installed fallback render-before patch (findByProps)");
+      } catch (e) {
+        // nothing
+      }
+    }
   }
 
-  /* -------------------------
-     Return unpatcher
-     ------------------------- */
+  if (!patchedAny) {
+    console.warn("[ObfuscationPlugin] No input candidate appeared to be patched. Check console logs for which candidates were present. You can enable additional diagnostics if needed.");
+  } else {
+    console.log("[ObfuscationPlugin] Input highlight applied (one or more candidates patched).");
+  }
+
+  // Return unpatch function
   return () => {
     try {
-      patches.forEach((unpatch) => unpatch && unpatch());
+      unpatches.forEach((u) => u && u());
+      console.log("[ObfuscationPlugin] unpatched all patches.");
     } catch (e) {
-      console.error("[ObfuscationPlugin] error while unpatching:", e);
+      console.error("[ObfuscationPlugin] error during unpatch:", e);
     }
   };
 }
