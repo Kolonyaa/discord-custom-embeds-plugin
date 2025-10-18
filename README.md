@@ -1,5 +1,29 @@
-# custom embeds
-epic repo
+## uoh-core-plugins
+- install the plugins by copying the URL related to its plugin
+- head to Revenge ⟹ Plugins ⟹ Click the (+) icon ⟹ insert URL ⟹ enable plugin
+- optionally, ensure plugin settings suit your needs
 
-# why so empty?
-I'll have it customized later !!
+
+
+
+
+<table>
+  <tr>
+    <td align="center">
+      <a href="https://uoh-core.github.io/uoh-core-plugins/custom-embeds/">
+        <img src="https://github.com/user-attachments/assets/14931a3d-9bac-4b9b-a72e-dba5ede1b29a" height="300">
+      </a>
+      <br>
+      <strong>Custom Embeds</strong><br>
+      <a href="https://uoh-core.github.io/uoh-core-plugins/custom-embeds/">Copy me</a>
+    </td>
+    <td align="center">
+      <a href="https://uoh-core.github.io/uoh-core-plugins/obfuscation/">
+        <img src="https://github.com/user-attachments/assets/733ca83e-95cf-4df6-b985-c88f2c51acfa" height="300">
+      </a>
+      <br>
+      <strong>Obfuscation</strong><br>
+      <a href="https://uoh-core.github.io/uoh-core-plugins/obfuscation/">Copy me</a>
+    </td>
+  </tr>
+</table>
