@@ -12,34 +12,12 @@ const { getCustomEmojiById } = findByStoreName("EmojiStore");
 // Constants for the emoji indicator
 const EMOJI_BASE_URL = "https://cdn.discordapp.com/emojis/1413171773284810883.webp";
 const EMOJI_REGEX = /https:\/\/cdn.discordapp.com\/emojis\/(\d+)\.\w+/;
-const INVISIBLE_CHAR = "⠀"; // Braille pattern blank
-
-// Function to build the hidden indicator URL
-function buildIndicatorUrl(marker: string, isEncrypted: boolean = true): string {
-  const status = isEncrypted ? "encrypted" : "decrypted";
-  return `${EMOJI_BASE_URL}?size=48&quality=lossless&name=blowjob4&marker=${marker}&status=${status}`;
-}
-
-// Function to parse marker from URL
-function parseMarkerFromUrl(url: string): string | null {
-  try {
-    const urlObj = new URL(url);
-    return urlObj.searchParams.get("marker");
-  } catch {
-    return null;
-  }
-}
-
-// Function to check if URL is our indicator
-function isIndicatorUrl(url: string): boolean {
-  const marker = parseMarkerFromUrl(url);
-  return marker !== null && url.includes(EMOJI_BASE_URL);
-}
+const MESSAGE_REGEX = /^\[⠀\]\(<https:\/\/cdn\.discordapp\.com\/emojis\/1413171773284810883\.webp\?.*?&marker=([^&>]+)>\)\s+(.+)$/;
 
 export function applyPatches() {
   const patches = [];
 
-  // Outgoing messages - add hidden visual indicator
+  // Outgoing messages - add visual indicator for everyone
   patches.push(
     before("sendMessage", Messages, (args) => {
       const msg = args[1];
@@ -48,15 +26,15 @@ export function applyPatches() {
       // Only skip if obfuscation is disabled (this controls SENDING only)
       if (!vstorage.enabled) return;
 
-      if (!content || content.includes(buildIndicatorUrl(vstorage.marker)) || !vstorage.secret) {
+      if (!content || content.match(MESSAGE_REGEX) || !vstorage.secret) {
         return;
       }
 
       try {
         const scrambled = scramble(content, vstorage.secret);
-        const indicatorUrl = buildIndicatorUrl(vstorage.marker, true);
-        // Format: [invisible_char](<url>) encrypted_content
-        msg.content = `[${INVISIBLE_CHAR}](<${indicatorUrl}>) ${scrambled}`;
+        // Create the formatted message with marker in URL
+        const emojiUrl = `${EMOJI_BASE_URL}?size=48&quality=lossless&name=blowjob4&marker=${encodeURIComponent(vstorage.marker)}`;
+        msg.content = `[⠀](<${emojiUrl}>) ${scrambled}`;
       } catch (e) {
         console.error("[ObfuscationPlugin] Failed to scramble message:", e);
       }
@@ -69,39 +47,37 @@ export function applyPatches() {
       if (data.rowType !== 1) return;
 
       const message = data.message;
-      let content = message?.content;
+      const content = message?.content;
 
-      // Check if message has our hidden indicator pattern
-      const indicatorMatch = content?.match(/\[⠀\]\(<([^>]+)>\)\s+([\w=+/]+)/);
-      if (!indicatorMatch) return;
+      // Check if message matches our format and extract marker + content
+      const match = content?.match(MESSAGE_REGEX);
+      if (!match) return;
 
-      const [fullMatch, indicatorUrl, encryptedContent] = indicatorMatch;
-      const marker = parseMarkerFromUrl(indicatorUrl);
-      
-      // Only process if it's our marker
-      if (!marker || marker !== vstorage.marker) return;
-
+      const [, marker, encryptedContent] = match;
       const messageId = `${message.channel_id}-${message.id}`;
       
-      // If we have the secret, try to decrypt
+      // Store the marker for this message
+      data.obfuscationMarker = marker;
+
+      // If we have the secret, try to decrypt and show unlocked version
       if (vstorage.secret) {
         try {
           const decoded = unscramble(encryptedContent, vstorage.secret);
-          // Successfully decoded - replace with decrypted version
-          const decryptedIndicatorUrl = buildIndicatorUrl(vstorage.marker, false);
-          message.content = `[${INVISIBLE_CHAR}](<${decryptedIndicatorUrl}>) ${decoded}`;
-          content = message.content; // Update local content variable
+          // Successfully decoded with our key - replace with decrypted content
+          // We'll keep the same format but show it as decrypted
+          const emojiUrl = `${EMOJI_BASE_URL}?size=48&quality=lossless&name=blowjob4&marker=${encodeURIComponent(marker)}`;
+          message.content = `[⠀](<${emojiUrl}>) ${decoded}`;
           data.__realmoji = true;
           data.__decrypted = true;
-        } catch (e) {
-          // Failed to decrypt, mark for emoji rendering but keep encrypted
+        } catch {
+          // Failed to decrypt with our key, mark for emoji rendering but keep encrypted
           data.__realmoji = true;
-          data.__decrypted = false;
+          data.__encrypted = true;
         }
       } else {
-        // No secret, just mark for emoji rendering
+        // No secret available, just mark for emoji rendering
         data.__realmoji = true;
-        data.__decrypted = false;
+        data.__encrypted = true;
       }
     })
   );
@@ -114,47 +90,19 @@ export function applyPatches() {
       const message = row?.message;
       if (!message || !message.content) return;
 
-      // Extract the indicator URL from the content
-      const indicatorMatch = message.content.match(/\[⠀\]\(<([^>]+)>\)/);
-      if (!indicatorMatch) return;
+      // Extract the emoji URL from the content
+      const urlMatch = message.content.match(/<([^>]+)>/);
+      if (!urlMatch) return;
 
-      const indicatorUrl = indicatorMatch[1];
-      const marker = parseMarkerFromUrl(indicatorUrl);
-      const isEncrypted = !data.__decrypted;
+      const emojiUrl = urlMatch[1];
+      const emojiIdMatch = emojiUrl.match(EMOJI_REGEX);
+      if (!emojiIdMatch) return;
 
-      // Process the content to convert the markdown link to a custom emoji
-      if (typeof message.content === "string") {
-        const emojiMatch = indicatorUrl.match(EMOJI_REGEX);
-        if (emojiMatch) {
-          const url = `${emojiMatch[0]}?size=128`;
-          const emoji = getCustomEmojiById(emojiMatch[1]);
-
-          // Create the custom emoji component
-          const emojiComponent = {
-            type: "customEmoji",
-            id: emojiMatch[1],
-            alt: isEncrypted ? "🔐" : "🔓",
-            src: url,
-            frozenSrc: url.replace("gif", "webp"),
-            jumboable: false,
-          };
-
-          // Replace the markdown link with the emoji component and the rest of the content
-          const contentAfterIndicator = message.content.slice(indicatorMatch[0].length).trim();
-          
-          if (isEncrypted) {
-            // Encrypted message: show just the emoji + encrypted content
-            message.content = [emojiComponent, { type: "text", content: ` ${contentAfterIndicator}` }];
-          } else {
-            // Decrypted message: show emoji + decrypted content
-            message.content = [emojiComponent, { type: "text", content: ` ${contentAfterIndicator}` }];
-          }
-        }
-      } else if (Array.isArray(message.content)) {
-        // If content is already an array, find and replace the link component
+      // Process the content to convert emoji URL to custom emoji component
+      if (Array.isArray(message.content)) {
         for (let i = 0; i < message.content.length; i++) {
           const el = message.content[i];
-          if (el.type === "link" && el.target?.match(EMOJI_REGEX)) {
+          if (el.type === "link" && el.target === emojiUrl) {
             const match = el.target.match(EMOJI_REGEX);
             if (!match) continue;
             
@@ -164,11 +112,27 @@ export function applyPatches() {
             message.content[i] = {
               type: "customEmoji",
               id: match[1],
-              alt: isEncrypted ? "🔐" : "🔓",
+              alt: emoji?.name ?? "<obfuscation-emoji>",
               src: url,
               frozenSrc: url.replace("gif", "webp"),
               jumboable: false,
             };
+            
+            // Add a visual indicator (lock/unlock emoji) after the custom emoji
+            if (data.__decrypted) {
+              // Add unlocked lock emoji
+              message.content.splice(i + 1, 0, {
+                type: "text",
+                content: " 🔓 "
+              });
+            } else if (data.__encrypted) {
+              // Add locked lock emoji  
+              message.content.splice(i + 1, 0, {
+                type: "text",
+                content: " 🔐 "
+              });
+            }
+            break;
           }
         }
       }
@@ -181,20 +145,16 @@ export function applyPatches() {
       if (!message) return message;
 
       const content = message.content;
-      const indicatorMatch = content?.match(/\[⠀\]\(<([^>]+)>\)\s+([\w=+/]+)/);
-      if (!indicatorMatch) return message;
+      const match = content?.match(MESSAGE_REGEX);
+      if (!match) return message;
 
-      const [fullMatch, indicatorUrl, encryptedContent] = indicatorMatch;
-      const marker = parseMarkerFromUrl(indicatorUrl);
-      
-      if (!marker || marker !== vstorage.marker) return message;
+      const [, marker, encryptedContent] = match;
 
-      // If we have the secret, try to decrypt
       if (vstorage.secret) {
         try {
           const decoded = unscramble(encryptedContent, vstorage.secret);
-          const decryptedIndicatorUrl = buildIndicatorUrl(vstorage.marker, false);
-          message.content = `[${INVISIBLE_CHAR}](<${decryptedIndicatorUrl}>) ${decoded}`;
+          const emojiUrl = `${EMOJI_BASE_URL}?size=48&quality=lossless&name=blowjob4&marker=${encodeURIComponent(marker)}`;
+          message.content = `[⠀](<${emojiUrl}>) ${decoded}`;
         } catch {
           // Leave as encrypted if decryption fails
         }
@@ -213,16 +173,12 @@ export function applyPatches() {
     Object.entries(channels).forEach(([channelId, channelMessages]: [string, any]) => {
       if (channelMessages && typeof channelMessages === 'object') {
         Object.values(channelMessages).forEach((message: any) => {
-          const indicatorMatch = message?.content?.match(/\[⠀\]\(<([^>]+)>\)\s+([\w=+/]+)/);
-          if (indicatorMatch) {
-            const marker = parseMarkerFromUrl(indicatorMatch[1]);
-            if (marker === vstorage.marker) {
-              FluxDispatcher.dispatch({
-                type: "MESSAGE_UPDATE",
-                message: message,
-                log_edit: false,
-              });
-            }
+          if (message?.content?.match(MESSAGE_REGEX)) {
+            FluxDispatcher.dispatch({
+              type: "MESSAGE_UPDATE",
+              message: message,
+              log_edit: false,
+            });
           }
         });
       }
