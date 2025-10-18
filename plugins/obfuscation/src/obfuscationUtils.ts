@@ -58,12 +58,17 @@ export function scramble(text: string, secret: string): string {
   combined[3] = iv & 0xff;
   combined.set(cipher, 4);
 
-  let s = "";
-  for (let i = 0; i < combined.length; i++) s += String.fromCharCode(combined[i]);
-  return btoa(s);
+  // Use URL-safe base64 without padding
+  let base64 = btoa(String.fromCharCode(...combined));
+  base64 = base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return base64;
 }
 
 export function unscramble(base64: string, secret: string): string {
+  // Convert back from URL-safe base64
+  base64 = base64.replace(/-/g, '+').replace(/_/g, '/');
+  while (base64.length % 4) base64 += '=';
+  
   const raw = atob(base64);
   const data = new Uint8Array(raw.length);
   for (let i = 0; i < raw.length; i++) data[i] = raw.charCodeAt(i);
