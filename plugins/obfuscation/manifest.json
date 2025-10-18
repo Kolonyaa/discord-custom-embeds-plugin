@@ -1,6 +1,6 @@
 {
   "name": "Obfuscation",
-  "description": "obfuscate messages via keystreams based on Xorshift32 & per-message IV 〔 ͟𝀛͟𝀛͟╹͟⌵͟╹͟𝀛͟𝀛͟ 〕",
+  "description": "Obfuscate messages via keystreams based on Xorshift32 & per-message IV 〔 ͟𝀛͟𝀛͟╹͟⌵͟╹͟𝀛͟𝀛͟ 〕",
   "authors": [
     {
       "name": "uoh.core",
