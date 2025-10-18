@@ -56,85 +56,51 @@ export function applyPatches() {
 
   // Patch RowManager for message rendering - ALWAYS process incoming messages
   patches.push(
-    after("generate", RowManager.prototype, ([data], row) => {
+    before("generate", RowManager.prototype, ([data]) => {
       if (data.rowType !== 1) return;
-      
-      const message = row?.message;
-      if (!message || !message.content) return;
 
-      // Process the content array to convert emoji URLs to custom emoji components
-      if (Array.isArray(message.content)) {
-        const newContent = [];
-        
-        for (let i = 0; i < message.content.length; i++) {
-          const el = message.content[i];
-          
-          // Handle obfuscation emoji
-          if (el.type === "link" && el.target?.includes(BASE_EMOJI_URL)) {
-            const match = el.target.match(/https:\/\/cdn\.discordapp\.com\/emojis\/(\d+)\.webp/);
-            if (!match) continue;
-            
-            const url = `${match[0]}?size=128`;
-            const emoji = getCustomEmojiById(match[1]);
+      const message = data.message;
+      let content = message?.content;
 
-            newContent.push({
-              type: "customEmoji",
-              id: match[1],
-              alt: emoji?.name ?? "<obfuscation-emoji>",
-              src: url,
-              frozenSrc: url.replace("gif", "webp"),
-              jumboable: false,
-            });
-          }
-          // Handle external emoji URLs in text content
-          else if (el.type === "text" && typeof el.content === "string") {
-            const text = el.content;
-            const emojiRegex = /(https:\/\/cdn\.discordapp\.com\/emojis\/(\d+)\.(webp|gif|png|jpg)(?:\?[^&\s]*)?)/g;
-            let lastIndex = 0;
-            let match;
+      // Check if message has our emoji indicator
+      if (!hasObfuscationEmoji(content)) return;
 
-            while ((match = emojiRegex.exec(text)) !== null) {
-              // Add text before the emoji URL
-              if (match.index > lastIndex) {
-                newContent.push({
-                  type: "text",
-                  content: text.slice(lastIndex, match.index)
-                });
-              }
 
-              // Add the emoji as a custom emoji component
-              const emojiId = match[2];
-              const extension = match[3];
-              const isAnimated = extension === "gif";
-              const url = `https://cdn.discordapp.com/emojis/${emojiId}.${isAnimated ? 'gif' : 'webp'}?size=128`;
-              
-              newContent.push({
-                type: "customEmoji",
-                id: emojiId,
-                alt: `:${emojiId}:`,
-                src: url,
-                frozenSrc: isAnimated ? url.replace("gif", "webp") : url,
-                jumboable: false,
-              });
+      // Extract marker from the wrapped URL
+      const markerMatch = content.match(EMOJI_REGEX);
+      const marker = markerMatch ? extractMarkerFromUrl(markerMatch[0]) : null;
 
-              lastIndex = match.index + match[0].length;
-            }
+      if (!marker) return;
 
-            // Add remaining text after the last emoji
-            if (lastIndex < text.length) {
-              newContent.push({
-                type: "text",
-                content: text.slice(lastIndex)
-              });
-            }
-          } else {
-            // Keep other elements as-is
-            newContent.push(el);
-          }
+      // Extract the encrypted body (everything after the wrapped emoji URL)
+      const wrappedEmojiUrl = markerMatch[0];
+      const encryptedBody = content.slice(content.indexOf(wrappedEmojiUrl) + wrappedEmojiUrl.length).trim();
+
+      // If we have the secret, try to decrypt
+      if (vstorage.secret && encryptedBody) {
+        try {
+          const decoded = unscramble(encryptedBody, vstorage.secret);
+          // Successfully decoded - replace content with decrypted version
+          // Use the same wrapped emoji URL but now the content is decrypted
+          message.content = `${wrappedEmojiUrl} ${decoded}`;
+          content = message.content; // Update local content variable
+          data.__decrypted = true;
+        } catch (e) {
+          // Failed to decrypt with our key, leave as encrypted
+          data.__encrypted = true;
         }
+      } else {
+        data.__encrypted = true;
+      }
 
-        // Update the message content with processed content
-        message.content = newContent;
+      // Process the wrapped emoji URL to render as actual emoji
+      if (content && hasObfuscationEmoji(content)) {
+        // Extract the actual URL from the wrapped version for processing
+        const actualUrl = wrappedEmojiUrl.slice(1, -1); // Remove < and >
+        // Replace the wrapped URL with the actual URL for emoji rendering
+        const processedContent = content.replace(wrappedEmojiUrl, ` ${actualUrl} `);
+        message.content = processedContent;
+        data.__realmoji = true;
       }
     })
   );
@@ -142,26 +108,27 @@ export function applyPatches() {
   // Additional patch to render the emoji URL as a custom emoji component
   patches.push(
     after("generate", RowManager.prototype, ([data], row) => {
-      if (data.rowType !== 1 || data.__realmoji !== true) return;
-      
+      if (data.rowType !== 1) return;
+
       const message = row?.message;
       if (!message || !message.content) return;
 
-      // Process the content array to convert emoji URLs to custom emoji components
+      // Process the content array to convert ALL emoji URLs to custom emoji components
       if (Array.isArray(message.content)) {
         for (let i = 0; i < message.content.length; i++) {
           const el = message.content[i];
-          if (el.type === "link" && el.target?.includes(BASE_EMOJI_URL)) {
-            const match = el.target.match(/https:\/\/cdn\.discordapp\.com\/emojis\/(\d+)\.webp/);
+          if (el.type === "link") {
+            // Match any Discord emoji URL, not just the obfuscation one
+            const match = el.target.match(/https:\/\/cdn\.discordapp\.com\/emojis\/(\d+)\.\w+/);
             if (!match) continue;
-            
+
             const url = `${match[0]}?size=128`;
             const emoji = getCustomEmojiById(match[1]);
 
             message.content[i] = {
               type: "customEmoji",
               id: match[1],
-              alt: emoji?.name ?? "<obfuscation-emoji>",
+              alt: emoji?.name ?? "<external-emoji>",
               src: url,
               frozenSrc: url.replace("gif", "webp"),
               jumboable: false,
@@ -183,7 +150,7 @@ export function applyPatches() {
       // Extract marker and encrypted body from wrapped URL
       const markerMatch = content.match(EMOJI_REGEX);
       const marker = markerMatch ? extractMarkerFromUrl(markerMatch[0]) : null;
-      
+
       if (!marker) return message;
 
       const wrappedEmojiUrl = markerMatch[0];
