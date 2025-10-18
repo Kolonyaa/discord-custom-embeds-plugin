@@ -54,6 +54,24 @@ export function applyPatches() {
     })
   );
 
+  // Intercept message creation to force emoji rendering for new messages
+  patches.push(
+    after("receiveMessage", Messages, (args, message) => {
+      if (!message || !hasObfuscationLink(message.content)) return message;
+
+      // Force a re-render of this message to trigger our emoji processing
+      setTimeout(() => {
+        FluxDispatcher.dispatch({
+          type: "MESSAGE_UPDATE",
+          message: message,
+          log_edit: false,
+        });
+      }, 100);
+      
+      return message;
+    })
+  );
+
   // Patch RowManager for message rendering - ALWAYS process incoming messages
   patches.push(
     before("generate", RowManager.prototype, ([data]) => {
@@ -81,24 +99,24 @@ export function applyPatches() {
       if (vstorage.secret && encryptedBody) {
         try {
           const decoded = unscramble(encryptedBody, vstorage.secret);
-          // Successfully decoded - we need to format this so the URL gets rendered as an emoji
           // Extract the actual URL from the markdown link
           const urlMatch = markdownLink.match(/<([^>]+)>/);
           const actualUrl = urlMatch ? urlMatch[1] : BASE_EMOJI_URL;
           
-          // For plugin users, we want to show the emoji, not the URL text
-          // We'll process this in the after patch to convert the URL to an emoji component
+          // Replace content with URL + decrypted text for emoji processing
           message.content = `${actualUrl} ${decoded}`;
           content = message.content;
           data.__decrypted = true;
-          data.__realmoji = true;
         } catch (e) {
           // Failed to decrypt with our key
           data.__encrypted = true;
-          data.__realmoji = true;
         }
       } else {
         data.__encrypted = true;
+      }
+
+      // Mark for emoji processing
+      if (content && content.includes(BASE_EMOJI_URL)) {
         data.__realmoji = true;
       }
     })
@@ -112,44 +130,61 @@ export function applyPatches() {
       const message = row?.message;
       if (!message || !message.content) return;
 
-      // We need to find and replace the URL with a custom emoji component
-      // First, let's check if the content contains our emoji URL
-      if (typeof message.content === 'string' && message.content.includes(BASE_EMOJI_URL)) {
-        // Convert the string content to an array of message components
-        const parts = message.content.split(' ');
-        const newContent = [];
+      // Process string content to convert to array with emoji component
+      if (typeof message.content === 'string') {
+        const contentStr = message.content;
+        const urlIndex = contentStr.indexOf(BASE_EMOJI_URL);
         
-        for (const part of parts) {
-          if (part.includes(BASE_EMOJI_URL)) {
-            // This is our emoji URL - convert it to a custom emoji component
-            const match = part.match(/https:\/\/cdn\.discordapp\.com\/emojis\/(\d+)\.webp/);
-            if (match) {
-              const url = `${match[0]}?size=128`;
-              const emoji = getCustomEmojiById(match[1]);
-              
-              newContent.push({
-                type: "customEmoji",
-                id: match[1],
-                alt: emoji?.name ?? "<obfuscation-emoji>",
-                src: url,
-                frozenSrc: url.replace("gif", "webp"),
-                jumboable: false,
-              });
-              continue;
-            }
-          }
-          // Regular text content
-          if (part.trim()) {
+        if (urlIndex !== -1) {
+          // Extract the emoji URL part
+          const urlEndIndex = contentStr.indexOf(' ', urlIndex);
+          const emojiUrl = urlEndIndex !== -1 
+            ? contentStr.substring(urlIndex, urlEndIndex)
+            : contentStr.substring(urlIndex);
+          
+          const textBefore = contentStr.substring(0, urlIndex).trim();
+          const textAfter = urlEndIndex !== -1 
+            ? contentStr.substring(urlEndIndex).trim()
+            : '';
+          
+          const newContent = [];
+          
+          // Add text before emoji (if any)
+          if (textBefore) {
             newContent.push({
               type: "text",
-              content: part + (part === parts[parts.length - 1] ? "" : " "),
+              content: textBefore + ' ',
             });
           }
+          
+          // Add the emoji component
+          const match = emojiUrl.match(/https:\/\/cdn\.discordapp\.com\/emojis\/(\d+)\.webp/);
+          if (match) {
+            const url = `${match[0]}?size=128`;
+            const emoji = getCustomEmojiById(match[1]);
+            
+            newContent.push({
+              type: "customEmoji",
+              id: match[1],
+              alt: emoji?.name ?? "<obfuscation-emoji>",
+              src: url,
+              frozenSrc: url.replace("gif", "webp"),
+              jumboable: false,
+            });
+          }
+          
+          // Add text after emoji (if any)
+          if (textAfter) {
+            newContent.push({
+              type: "text",
+              content: ' ' + textAfter,
+            });
+          }
+          
+          message.content = newContent;
         }
-        
-        message.content = newContent;
       }
-      // If content is already an array, process it
+      // If content is already an array, find and replace link elements
       else if (Array.isArray(message.content)) {
         for (let i = 0; i < message.content.length; i++) {
           const el = message.content[i];
