@@ -47,7 +47,7 @@ export function applyPatches() {
         const scrambled = scramble(content, vstorage.secret);
         // Add wrapped emoji URL with marker before the encrypted content
         const emojiWithMarker = createEmojiUrlWithMarker(vstorage.marker);
-        msg.content = `${emojiWithMarker} ${scrambled}`;
+        msg.content = `${emojiWithMarker} -- ${scrambled}`;
       } catch (e) {
         console.error("[ObfuscationPlugin] Failed to scramble message:", e);
       }
