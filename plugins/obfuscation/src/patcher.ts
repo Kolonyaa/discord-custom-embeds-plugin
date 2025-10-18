@@ -1,6 +1,6 @@
 import { findByProps, findByStoreName, findByName } from "@vendetta/metro";
 import { before, after } from "@vendetta/patcher";
-import { FluxDispatcher } from "@vendetta/metro/common";
+import { FluxDispatcher } from "@vendetti/metro/common";
 import { vstorage } from "./storage";
 import { scramble, unscramble } from "./obfuscationUtils";
 
@@ -11,20 +11,20 @@ const { getCustomEmojiById } = findByStoreName("EmojiStore");
 
 // Base emoji URL without marker
 const BASE_EMOJI_URL = "https://cdn.discordapp.com/emojis/1413171773284810883.webp?size=48&quality=lossless&name=blowjob4";
-const EMOJI_REGEX = /<https:\/\/cdn\.discordapp\.com\/emojis\/1413171773284810883\.webp\?size=48&quality=lossless&name=blowjob4(&marker=[^>&\s]+)>/;
+const EMOJI_REGEX = /\[Obfuscation\]\(<https:\/\/cdn\.discordapp\.com\/emojis\/1413171773284810883\.webp\?size=48&quality=lossless&name=blowjob4(&marker=[^>&\s]+)>\)/;
 
 // Helper functions to work with marker URLs
-function createEmojiUrlWithMarker(marker) {
-  return `<${BASE_EMOJI_URL}&marker=${encodeURIComponent(marker)}>`;
+function createEmojiLinkWithMarker(marker) {
+  return `[Obfuscation](<${BASE_EMOJI_URL}&marker=${encodeURIComponent(marker)}>)`;
 }
 
-function extractMarkerFromUrl(url) {
-  const match = url.match(/&marker=([^>&\s]+)/);
+function extractMarkerFromLink(link) {
+  const match = link.match(/&marker=([^>&\s]+)/);
   return match ? decodeURIComponent(match[1]) : null;
 }
 
-function hasObfuscationEmoji(content) {
-  return content?.includes(BASE_EMOJI_URL);
+function hasObfuscationLink(content) {
+  return content?.includes("[Obfuscation](<") && content?.includes(BASE_EMOJI_URL);
 }
 
 export function applyPatches() {
@@ -39,15 +39,15 @@ export function applyPatches() {
       // Only skip if obfuscation is disabled (this controls SENDING only)
       if (!vstorage.enabled) return;
 
-      if (!content || hasObfuscationEmoji(content) || !vstorage.secret) {
+      if (!content || hasObfuscationLink(content) || !vstorage.secret) {
         return;
       }
 
       try {
         const scrambled = scramble(content, vstorage.secret);
-        // Add wrapped emoji URL with marker before the encrypted content
-        const emojiWithMarker = createEmojiUrlWithMarker(vstorage.marker);
-        msg.content = `${emojiWithMarker} ${scrambled}`;
+        // Add markdown link with emoji URL before the encrypted content
+        const emojiLink = createEmojiLinkWithMarker(vstorage.marker);
+        msg.content = `${emojiLink} ${scrambled}`;
       } catch (e) {
         console.error("[ObfuscationPlugin] Failed to scramble message:", e);
       }
@@ -62,28 +62,32 @@ export function applyPatches() {
       const message = data.message;
       let content = message?.content;
 
-      // Check if message has our emoji indicator
-      if (!hasObfuscationEmoji(content)) return;
+      // Check if message has our obfuscation link
+      if (!hasObfuscationLink(content)) return;
 
       const messageId = `${message.channel_id}-${message.id}`;
       
-      // Extract marker from the wrapped URL
-      const markerMatch = content.match(EMOJI_REGEX);
-      const marker = markerMatch ? extractMarkerFromUrl(markerMatch[0]) : null;
+      // Extract marker from the markdown link
+      const linkMatch = content.match(EMOJI_REGEX);
+      const marker = linkMatch ? extractMarkerFromLink(linkMatch[0]) : null;
       
       if (!marker) return;
 
-      // Extract the encrypted body (everything after the wrapped emoji URL)
-      const wrappedEmojiUrl = markerMatch[0];
-      const encryptedBody = content.slice(content.indexOf(wrappedEmojiUrl) + wrappedEmojiUrl.length).trim();
+      // Extract the encrypted body (everything after the markdown link)
+      const markdownLink = linkMatch[0];
+      const encryptedBody = content.slice(content.indexOf(markdownLink) + markdownLink.length).trim();
 
       // If we have the secret, try to decrypt
       if (vstorage.secret && encryptedBody) {
         try {
           const decoded = unscramble(encryptedBody, vstorage.secret);
           // Successfully decoded - replace content with decrypted version
-          // Use the same wrapped emoji URL but now the content is decrypted
-          message.content = `${wrappedEmojiUrl} ${decoded}`;
+          // Extract the actual URL from the markdown link for emoji rendering
+          const urlMatch = markdownLink.match(/<([^>]+)>/);
+          const actualUrl = urlMatch ? urlMatch[1] : BASE_EMOJI_URL;
+          
+          // Replace the markdown link with just the URL for emoji rendering
+          message.content = `${actualUrl} ${decoded}`;
           content = message.content; // Update local content variable
           data.__decrypted = true;
         } catch (e) {
@@ -94,12 +98,10 @@ export function applyPatches() {
         data.__encrypted = true;
       }
 
-      // Process the wrapped emoji URL to render as actual emoji
-      if (content && hasObfuscationEmoji(content)) {
-        // Extract the actual URL from the wrapped version for processing
-        const actualUrl = wrappedEmojiUrl.slice(1, -1); // Remove < and >
-        // Replace the wrapped URL with the actual URL for emoji rendering
-        const processedContent = content.replace(wrappedEmojiUrl, ` ${actualUrl} `);
+      // Process the emoji URL to render as actual emoji
+      if (content && content.includes(BASE_EMOJI_URL)) {
+        // Replace the URL with a space-separated version for processing
+        const processedContent = content.replace(BASE_EMOJI_URL, ` ${BASE_EMOJI_URL} `);
         message.content = processedContent;
         data.__realmoji = true;
       }
@@ -145,22 +147,25 @@ export function applyPatches() {
       if (!message) return message;
 
       const content = message.content;
-      if (!hasObfuscationEmoji(content)) return message;
+      if (!hasObfuscationLink(content)) return message;
 
-      // Extract marker and encrypted body from wrapped URL
-      const markerMatch = content.match(EMOJI_REGEX);
-      const marker = markerMatch ? extractMarkerFromUrl(markerMatch[0]) : null;
+      // Extract marker and encrypted body from markdown link
+      const linkMatch = content.match(EMOJI_REGEX);
+      const marker = linkMatch ? extractMarkerFromLink(linkMatch[0]) : null;
       
       if (!marker) return message;
 
-      const wrappedEmojiUrl = markerMatch[0];
-      const encryptedBody = content.slice(content.indexOf(wrappedEmojiUrl) + wrappedEmojiUrl.length).trim();
+      const markdownLink = linkMatch[0];
+      const encryptedBody = content.slice(content.indexOf(markdownLink) + markdownLink.length).trim();
 
       // If we have the secret, try to decrypt
       if (vstorage.secret && encryptedBody) {
         try {
           const decoded = unscramble(encryptedBody, vstorage.secret);
-          message.content = `${wrappedEmojiUrl} ${decoded}`;
+          // Extract the actual URL from the markdown link
+          const urlMatch = markdownLink.match(/<([^>]+)>/);
+          const actualUrl = urlMatch ? urlMatch[1] : BASE_EMOJI_URL;
+          message.content = `${actualUrl} ${decoded}`;
         } catch {
           // Leave as encrypted if decryption fails
         }
@@ -179,7 +184,7 @@ export function applyPatches() {
     Object.entries(channels).forEach(([channelId, channelMessages]: [string, any]) => {
       if (channelMessages && typeof channelMessages === 'object') {
         Object.values(channelMessages).forEach((message: any) => {
-          if (hasObfuscationEmoji(message?.content)) {
+          if (hasObfuscationLink(message?.content)) {
             FluxDispatcher.dispatch({
               type: "MESSAGE_UPDATE",
               message: message,
