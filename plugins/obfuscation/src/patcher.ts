@@ -10,13 +10,15 @@ const RowManager = findByName("RowManager");
 const { getCustomEmojiById } = findByStoreName("EmojiStore");
 
 // Constants for the emoji indicator
-const EMOJI_URL = "https://cdn.discordapp.com/emojis/1413171773284810883.webp?size=48&quality=lossless&name=blowjob4";
+const EMOJI_URL = "https://cdn.discordapp.com/emojis/1429139654137090220.webp?size=48&quality=lossless&name=unlocked";
 const EMOJI_REGEX = /https:\/\/cdn.discordapp.com\/emojis\/(\d+)\.\w+/;
+const INVISIBLE_PREFIX = "\u200B\u200B\u200B"; // Zero-width spaces
+const VISIBLE_INDICATOR = `${INVISIBLE_PREFIX}${EMOJI_URL}${INVISIBLE_PREFIX}`;
 
 export function applyPatches() {
   const patches = [];
 
-  // Outgoing messages - add visual indicator for everyone
+  // Outgoing messages - add invisible emoji indicator
   patches.push(
     before("sendMessage", Messages, (args) => {
       const msg = args[1];
@@ -25,14 +27,14 @@ export function applyPatches() {
       // Only skip if obfuscation is disabled (this controls SENDING only)
       if (!vstorage.enabled) return;
 
-      if (!content || content.startsWith(EMOJI_URL) || content.startsWith(`[🔐${vstorage.marker}]`) || content.startsWith(`[🔓${vstorage.marker}]`) || !vstorage.secret) {
+      if (!content || content.includes(VISIBLE_INDICATOR) || content.startsWith(`[🔐${vstorage.marker}]`) || content.startsWith(`[🔓${vstorage.marker}]`) || !vstorage.secret) {
         return;
       }
 
       try {
         const scrambled = scramble(content, vstorage.secret);
-        // Add emoji URL before the marker
-        msg.content = `${EMOJI_URL} [🔐${vstorage.marker}] ${scrambled}`;
+        // Add invisible emoji indicator before the marker
+        msg.content = `${VISIBLE_INDICATOR}[🔐${vstorage.marker}] ${scrambled}`;
       } catch (e) {
         console.error("[ObfuscationPlugin] Failed to scramble message:", e);
       }
@@ -47,25 +49,26 @@ export function applyPatches() {
       const message = data.message;
       let content = message?.content;
 
-      // Check if message has our emoji indicator and lock marker
-      const hasEmoji = content?.includes(EMOJI_URL);
+      // Check if message has our invisible emoji indicator and lock marker
+      const hasEmojiIndicator = content?.includes(VISIBLE_INDICATOR);
       const hasLockMarker = content?.includes(`[🔐${vstorage.marker}]`);
       const hasUnlockMarker = content?.includes(`[🔓${vstorage.marker}]`);
 
-      if (!hasEmoji || (!hasLockMarker && !hasUnlockMarker)) return;
+      if (!hasEmojiIndicator || (!hasLockMarker && !hasUnlockMarker)) return;
 
       const messageId = `${message.channel_id}-${message.id}`;
       
       // Extract the encrypted body if it's a locked message
       if (hasLockMarker) {
-        const encryptedBody = content.slice(content.indexOf(`[🔐${vstorage.marker}]`) + `[🔐${vstorage.marker}] `.length);
+        const markerStart = content.indexOf(`[🔐${vstorage.marker}]`);
+        const encryptedBody = content.slice(markerStart + `[🔐${vstorage.marker}] `.length);
 
         // If we have the secret, try to decrypt and show unlocked version
         if (vstorage.secret) {
           try {
             const decoded = unscramble(encryptedBody, vstorage.secret);
             // Successfully decoded with our key - replace with unlocked version
-            message.content = `${EMOJI_URL} [🔓${vstorage.marker}] ${decoded}`;
+            message.content = `${VISIBLE_INDICATOR}[🔓${vstorage.marker}] ${decoded}`;
             content = message.content; // Update local content variable
           } catch {
             // Failed to decrypt with our key, leave as locked version
@@ -73,10 +76,12 @@ export function applyPatches() {
         }
       }
 
-      // Process the emoji URL to render as actual emoji
-      if (content && content.includes(EMOJI_URL)) {
-        // Replace the emoji URL with a space-separated version for processing
-        const processedContent = content.replace(EMOJI_URL, ` ${EMOJI_URL} `);
+      // Process the invisible emoji indicator to render as actual emoji
+      if (content && content.includes(VISIBLE_INDICATOR)) {
+        // Extract just the emoji URL part for rendering
+        const emojiUrl = EMOJI_URL;
+        // Replace the invisible indicator with the emoji URL for rendering
+        const processedContent = content.replace(VISIBLE_INDICATOR, ` ${emojiUrl} `);
         message.content = processedContent;
         data.__realmoji = true;
       }
@@ -122,18 +127,19 @@ export function applyPatches() {
       if (!message) return message;
 
       const content = message.content;
-      if (!content?.includes(EMOJI_URL) || (!content?.includes(`[🔐${vstorage.marker}]`) && !content?.includes(`[🔓${vstorage.marker}]`))) {
+      if (!content?.includes(VISIBLE_INDICATOR) || (!content?.includes(`[🔐${vstorage.marker}]`) && !content?.includes(`[🔓${vstorage.marker}]`))) {
         return message;
       }
 
       // Extract the encrypted body if it's a locked message
       if (content.includes(`[🔐${vstorage.marker}]`)) {
-        const encryptedBody = content.slice(content.indexOf(`[🔐${vstorage.marker}]`) + `[🔐${vstorage.marker}] `.length);
+        const markerStart = content.indexOf(`[🔐${vstorage.marker}]`);
+        const encryptedBody = content.slice(markerStart + `[🔐${vstorage.marker}] `.length);
 
         if (vstorage.secret) {
           try {
             const decoded = unscramble(encryptedBody, vstorage.secret);
-            message.content = `${EMOJI_URL} [🔓${vstorage.marker}] ${decoded}`;
+            message.content = `${VISIBLE_INDICATOR}[🔓${vstorage.marker}] ${decoded}`;
           } catch {
             // Leave as locked if decryption fails
           }
@@ -153,7 +159,7 @@ export function applyPatches() {
     Object.entries(channels).forEach(([channelId, channelMessages]: [string, any]) => {
       if (channelMessages && typeof channelMessages === 'object') {
         Object.values(channelMessages).forEach((message: any) => {
-          if (message?.content?.includes(EMOJI_URL) && 
+          if (message?.content?.includes(VISIBLE_INDICATOR) && 
               (message.content.includes(`[🔐${vstorage.marker}]`) || message.content.includes(`[🔓${vstorage.marker}]`))) {
             FluxDispatcher.dispatch({
               type: "MESSAGE_UPDATE",
