@@ -4,7 +4,7 @@ import { before, after } from "@vendetta/patcher";
 import { FluxDispatcher } from "@vendetta/metro/common";
 import { vstorage } from "./storage";
 import { scramble, unscramble } from "./obfuscationUtils";
-import ObfuscationLabel from "./components/ObfuscationLabel";
+import ObfuscationLabel from "./components/obfuscationLabel";
 
 const Messages = findByProps("sendMessage", "editMessage", "receiveMessage");
 const MessageStore = findByStoreName("MessageStore");
@@ -39,28 +39,37 @@ export function applyPatches() {
   );
 
   // Patch RowManager for message rendering - ALWAYS process incoming messages
+  // Alternative patcher approach
   patches.push(
-    before("generate", RowManager.prototype, ([data]) => {
-      if (data.rowType !== 1) return;
+    after("generate", RowManager.prototype, ([data], row) => {
+      if (data.rowType !== 1 || !row?.message) return;
 
       const message = data.message;
-      const content = message?.content;
-      const marker = message?.obfuscationMarker || vstorage.marker;
+      const marker = message?.obfuscationMarker;
 
-      // Check if this is an obfuscated message (either by marker or by content pattern)
-      const isObfuscated = message?.obfuscationMarker || 
-                           (content && !content.startsWith("[🔐") && !content.startsWith("[🔓"));
+      if (!marker) return;
 
-      if (!isObfuscated || !vstorage.secret) return;
+      console.log("[Obfuscation] Processing obfuscated message");
 
-      try {
-        const decoded = unscramble(content, vstorage.secret);
-        // Store the decoded content and mark as successfully decrypted
-        message._decodedContent = decoded;
-        message._isDecrypted = true;
-      } catch {
-        // Failed to decrypt, mark as encrypted
-        message._isDecrypted = false;
+      // Look for the message content text element
+      const messageContent = findInReactTree(row,
+        x => typeof x?.props?.children === "string" && x.props.children === message.content
+      );
+
+      if (messageContent) {
+        console.log("[Obfuscation] Found message content element");
+
+        // Replace the string content with an array that includes our label
+        const labelElement = React.createElement(ObfuscationLabel, {
+          marker: marker,
+          isEncrypted: !message._isDecrypted
+        });
+
+        messageContent.props.children = [
+          labelElement,
+          " ", // Add a space
+          message._isDecrypted ? message._decodedContent : "[Encrypted Message]"
+        ];
       }
     })
   );
@@ -72,17 +81,17 @@ export function applyPatches() {
 
       const message = data.message;
       const marker = message?.obfuscationMarker || vstorage.marker;
-      
+
       // Check if this message was processed by our obfuscation system
-      const isObfuscated = message?.obfuscationMarker || 
-                          (message.content && !message.content.startsWith("[🔐") && !message.content.startsWith("[🔓"));
+      const isObfuscated = message?.obfuscationMarker ||
+        (message.content && !message.content.startsWith("[🔐") && !message.content.startsWith("[🔓"));
 
       if (!isObfuscated) return;
 
       // Find the message content container in the React tree
-      const contentContainer = findInReactTree(row, 
-        x => x?.props?.style?.flexDirection === "column" && 
-             Array.isArray(x.props.children)
+      const contentContainer = findInReactTree(row,
+        x => x?.props?.style?.flexDirection === "column" &&
+          Array.isArray(x.props.children)
       );
 
       if (!contentContainer) return;
@@ -109,7 +118,7 @@ export function applyPatches() {
 
       const content = message.content;
       const marker = message?.obfuscationMarker || vstorage.marker;
-      
+
       if (!content || message.obfuscationMarker || content.startsWith("[🔐") || content.startsWith("[🔓")) {
         return message;
       }
@@ -133,18 +142,18 @@ export function applyPatches() {
   function findInReactTree(tree, filter) {
     if (!tree) return null;
     if (filter(tree)) return tree;
-    
+
     if (tree.props?.children) {
-      const children = Array.isArray(tree.props.children) 
-        ? tree.props.children 
+      const children = Array.isArray(tree.props.children)
+        ? tree.props.children
         : [tree.props.children];
-      
+
       for (const child of children) {
         const result = findInReactTree(child, filter);
         if (result) return result;
       }
     }
-    
+
     return null;
   }
 
