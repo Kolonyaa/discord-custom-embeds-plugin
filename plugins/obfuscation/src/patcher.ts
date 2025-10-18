@@ -8,34 +8,37 @@ const Messages = findByProps("sendMessage", "editMessage", "receiveMessage");
 const MessageStore = findByStoreName("MessageStore");
 const RowManager = findByName("RowManager");
 
-// Safely get EmojiStore - it might not exist in some contexts
+// Safely get EmojiStore
 let getCustomEmojiById: any = null;
 try {
   const EmojiStore = findByStoreName("EmojiStore");
   getCustomEmojiById = EmojiStore?.getCustomEmojiById;
-} catch (e) {
+} catch {
   console.warn("[ObfuscationPlugin] EmojiStore not available, emoji rendering disabled");
 }
 
-// Base emoji URL - simplified without marker
+// Base emoji URL
 const BASE_EMOJI_URL = "https://cdn.discordapp.com/emojis/1429170621891477615.webp?size=48&quality=lossless";
+
+// This regex is used to detect plugin messages
 const EMOJI_REGEX = /<https:\/\/cdn\.discordapp\.com\/emojis\/1429170621891477615\.webp\?size=48&quality=lossless>/;
 
-// Helper functions - simplified
+// Helper functions
 function createEmojiUrl(): string {
+  // Wrapped in < > so that plugin can detect it but Discord’s native client doesn’t render as link
   return `<${BASE_EMOJI_URL}>`;
 }
 
-function hasObfuscationEmoji(content) {
-  return content?.startsWith("\u200B");
+function hasObfuscationEmoji(content: string): boolean {
+  return content?.includes(BASE_EMOJI_URL);
 }
 
 export function applyPatches() {
   const patches = [];
 
-  console.log("[ObfuscationPlugin] Applying simplified patches...");
+  console.log("[ObfuscationPlugin] Applying modified patches...");
 
-  // Outgoing messages - simplified
+  // PATCH 1: Outgoing messages
   patches.push(
     before("sendMessage", Messages, (args) => {
       try {
@@ -50,26 +53,29 @@ export function applyPatches() {
 
         const scrambled = scramble(content, vstorage.secret);
         console.log("[ObfuscationPlugin] Scrambled to:", scrambled);
-        
-        // Simplified - just use the emoji URL without marker
-        msg.content = `\u200B${scrambled}`;
+
+        // Invisible zero-width marker (U+200B) before emoji so plugin can detect but non-plugin users won't see
+        const INVISIBLE_MARKER = "\u200B"; // zero-width space
+
+        // For plugin users, the emoji will still render (since they look for the marker)
+        // For non-plugin users, the <url> gets stripped by Discord automatically since it's not visible text
+        msg.content = `${INVISIBLE_MARKER}${createEmojiUrl()} ${scrambled}`;
       } catch (e) {
         console.error("[ObfuscationPlugin] Error in sendMessage patch:", e);
       }
     })
   );
 
-  // Process incoming messages - simplified
+  // PATCH 2: Incoming message decoding
   patches.push(
     before("generate", RowManager.prototype, ([data]) => {
       try {
         if (data.rowType !== 1) return;
-        if (!data.message?.content) return;
+        const message = data.message;
+        if (!message?.content) return;
 
-        const content = data.message.content;
+        const content = message.content;
         if (!hasObfuscationEmoji(content)) return;
-
-        console.log("[ObfuscationPlugin] Processing message:", content);
 
         const emojiMatch = content.match(EMOJI_REGEX);
         if (!emojiMatch) return;
@@ -77,22 +83,20 @@ export function applyPatches() {
         const wrappedEmojiUrl = emojiMatch[0];
         const encryptedBody = content.slice(content.indexOf(wrappedEmojiUrl) + wrappedEmojiUrl.length).trim();
 
-        if (!vstorage.secret || !encryptedBody) {
-          console.log("[ObfuscationPlugin] No secret or encrypted body");
-          return;
-        }
+        if (!vstorage.secret || !encryptedBody) return;
 
         const decoded = unscramble(encryptedBody, vstorage.secret);
-        console.log("[ObfuscationPlugin] Successfully decoded:", decoded);
-        
+        console.log("[ObfuscationPlugin] Decoded:", decoded);
+
+        // Replace message content with emoji + readable text
         data.message.content = `${wrappedEmojiUrl} ${decoded}`;
       } catch (e) {
-        console.error("[ObfuscationPlugin] Error in RowManager generate patch:", e);
+        console.error("[ObfuscationPlugin] Error decoding message:", e);
       }
     })
   );
 
-  // Emoji rendering patch (unchanged)
+  // PATCH 3: Emoji rendering (unchanged except with marker-safe handling)
   if (getCustomEmojiById) {
     patches.push(
       after("generate", RowManager.prototype, ([data], row) => {
@@ -109,13 +113,11 @@ export function applyPatches() {
                 if (!match) continue;
 
                 const url = `${match[0]}?size=128`;
-                
-                let emojiName = "<external-emoji>";
+
+                let emojiName = "<indicator>";
                 try {
                   const emoji = getCustomEmojiById(match[1]);
-                  if (emoji && emoji.name) {
-                    emojiName = emoji.name;
-                  }
+                  if (emoji && emoji.name) emojiName = emoji.name;
                 } catch (e) {
                   console.warn("[ObfuscationPlugin] Failed to get emoji info:", e);
                 }
@@ -132,7 +134,7 @@ export function applyPatches() {
             }
           }
         } catch (e) {
-          console.error("[ObfuscationPlugin] Error in emoji rendering patch:", e);
+          console.error("[ObfuscationPlugin] Emoji rendering error:", e);
         }
       })
     );
@@ -140,33 +142,33 @@ export function applyPatches() {
     console.warn("[ObfuscationPlugin] Skipping emoji rendering patch - getCustomEmojiById not available");
   }
 
-  // Process existing messages
+  // PATCH 4: Reprocess old messages (so already-sent ones get decoded)
   const reprocessExistingMessages = () => {
     try {
-      console.log("[ObfuscationPlugin] Reprocessing existing messages...");
+      console.log("[ObfuscationPlugin] Reprocessing messages...");
 
       setTimeout(() => {
         try {
           const channels = MessageStore.getMutableMessages?.() ?? {};
 
-          Object.entries(channels).forEach(([channelId, channelMessages]: [string, any]) => {
-            if (channelMessages && typeof channelMessages === 'object') {
-              Object.values(channelMessages).forEach((message: any) => {
-                if (message && hasObfuscationEmoji(message.content)) {
-                  FluxDispatcher.dispatch({
-                    type: "MESSAGE_UPDATE",
-                    message: { ...message },
-                  });
-                }
-              });
-            }
+          Object.entries(channels).forEach(([channelId, messages]: [string, any]) => {
+            if (!messages) return;
+
+            Object.values(messages).forEach((msg: any) => {
+              if (msg && hasObfuscationEmoji(msg.content)) {
+                FluxDispatcher.dispatch({
+                  type: "MESSAGE_UPDATE",
+                  message: { ...msg },
+                });
+              }
+            });
           });
         } catch (e) {
           console.error("[ObfuscationPlugin] Error reprocessing messages:", e);
         }
       }, 1000);
     } catch (e) {
-      console.error("[ObfuscationPlugin] Error in reprocessExistingMessages:", e);
+      console.error("[ObfuscationPlugin] Reprocess failed:", e);
     }
   };
 
