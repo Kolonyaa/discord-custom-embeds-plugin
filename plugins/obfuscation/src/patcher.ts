@@ -8,9 +8,6 @@ const Messages = findByProps("sendMessage", "editMessage", "receiveMessage");
 const MessageStore = findByStoreName("MessageStore");
 const RowManager = findByName("RowManager");
 
-// Export a function that can be called from outside to force reprocessing
-export let forceReprocessMessages: (() => void) | null = null;
-
 export function applyPatches() {
   const patches = [];
 
@@ -20,6 +17,7 @@ export function applyPatches() {
       const msg = args[1];
       const content = msg?.content;
 
+      // Add this check - if obfuscation is disabled, don't process the message
       if (!vstorage.enabled) return;
 
       if (!content || content.startsWith(`[🔐${vstorage.marker}]`) || content.startsWith(`[🔓${vstorage.marker}]`) || !vstorage.secret) {
@@ -38,63 +36,38 @@ export function applyPatches() {
   // Patch RowManager for message rendering
   patches.push(
     before("generate", RowManager.prototype, ([data]) => {
-      if (data.rowType !== 1) return;
+      if (data.rowType !== 1 || !vstorage.enabled) return;
 
       const message = data.message;
       const content = message?.content;
 
-      // If plugin is disabled, show encrypted version regardless
-      if (!vstorage.enabled) {
-        if (content?.startsWith(`[🔓${vstorage.marker}]`)) {
-          const decryptedBody = content.slice(`[🔓${vstorage.marker}] `.length);
-          try {
-            const scrambled = scramble(decryptedBody, vstorage.secret);
-            message.content = `[🔐${vstorage.marker}] ${scrambled}`;
-          } catch (e) {
-            // If scrambling fails, leave as is
-          }
-        }
-        return;
-      }
-
-      // Plugin is enabled - try to decrypt
+      // Check if message has our lock indicator (encrypted message)
       if (!content?.startsWith(`[🔐${vstorage.marker}]`)) return;
 
+      const messageId = `${message.channel_id}-${message.id}`;
       const encryptedBody = content.slice(`[🔐${vstorage.marker}] `.length);
 
+      // If we have the secret, try to decrypt and show unlocked version
       if (vstorage.secret) {
         try {
           const decoded = unscramble(encryptedBody, vstorage.secret);
+          // Successfully decoded with our key - replace with unlocked version
           message.content = `[🔓${vstorage.marker}] ${decoded}`;
         } catch {
-          // Failed to decrypt, leave as locked
+          // Failed to decrypt with our key, leave as locked version
+          // message.content stays as `[🔐${vstorage.marker}] ${encryptedBody}`
         }
       }
+      // If no secret, message stays as locked version
     })
   );
 
   // Also patch getMessage
   patches.push(
     after("getMessage", MessageStore, (args, message) => {
-      if (!message) return message;
+      if (!message || !vstorage.enabled) return message;
 
       const content = message.content;
-      
-      // If plugin is disabled, show encrypted version
-      if (!vstorage.enabled) {
-        if (content?.startsWith(`[🔓${vstorage.marker}]`)) {
-          const decryptedBody = content.slice(`[🔓${vstorage.marker}] `.length);
-          try {
-            const scrambled = scramble(decryptedBody, vstorage.secret);
-            message.content = `[🔐${vstorage.marker}] ${scrambled}`;
-          } catch (e) {
-            // If scrambling fails, leave as is
-          }
-        }
-        return message;
-      }
-
-      // Plugin is enabled - try to decrypt
       if (!content?.startsWith(`[🔐${vstorage.marker}]`)) return message;
 
       const encryptedBody = content.slice(`[🔐${vstorage.marker}] `.length);
@@ -112,18 +85,21 @@ export function applyPatches() {
     })
   );
 
-  // Create the force reprocess function
-  forceReprocessMessages = () => {
-    console.log("[ObfuscationPlugin] Force reprocessing messages from patcher...");
-    
+  // Process existing messages by forcing a re-render
+  const reprocessExistingMessages = () => {
+    if (!vstorage.enabled) return;
+
+    console.log("[ObfuscationPlugin] Reprocessing existing messages...");
+
     const channels = MessageStore.getMutableMessages?.() ?? {};
+
     Object.entries(channels).forEach(([channelId, channelMessages]: [string, any]) => {
       if (channelMessages && typeof channelMessages === 'object') {
         Object.values(channelMessages).forEach((message: any) => {
-          if (message?.content) {
+          if (message?.content?.startsWith(`[🔐${vstorage.marker}]`)) {
             FluxDispatcher.dispatch({
-              type: "MESSAGE_UPDATE", 
-              message: { ...message },
+              type: "MESSAGE_UPDATE",
+              message: message,
               log_edit: false,
             });
           }
@@ -132,8 +108,7 @@ export function applyPatches() {
     });
   };
 
-  return () => {
-    forceReprocessMessages = null;
-    patches.forEach(unpatch => unpatch());
-  };
+  setTimeout(reprocessExistingMessages, 500);
+
+  return () => patches.forEach(unpatch => unpatch());
 }
