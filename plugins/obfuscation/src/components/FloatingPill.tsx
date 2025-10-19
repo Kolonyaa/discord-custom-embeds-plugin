@@ -21,7 +21,7 @@ const styles = stylesheet.createThemedStyleSheet({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#2b2d31", // Manual dark grey to match Discord input
+    backgroundColor: semanticColors.INPUT_BACKGROUND, // #202225 - matches Discord input
   },
   actionIcon: {
     tintColor: semanticColors.INTERACTIVE_NORMAL,
@@ -32,7 +32,7 @@ const styles = stylesheet.createThemedStyleSheet({
     tintColor: "#ffb3d4", // Your pink color for ON
   },
   disabledIcon: {
-    tintColor: "#949ba4", // Slightly lighter grey for OFF
+    tintColor: semanticColors.INTERACTIVE_NORMAL, // #B9BBBE - perfect light grey
   },
 });
 
@@ -48,8 +48,8 @@ export default function FloatingPill() {
       style={{
         flexDirection: "row",
         position: "absolute",
-        right: 8, // Move more to the right (decreased value = more right)
-        bottom: 64, // Move higher up (increased value = higher position)
+        right: 8,
+        bottom: 64,
         zIndex: 9999,
       }}
     >
