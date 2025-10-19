@@ -53,15 +53,18 @@ export default function FloatingPill() {
         style={styles.actionButton}
       >
         <RN.Image
-          style={[
-            styles.actionIcon,
-            { tintColor: vstorage.enabled ? "#ffb3d4" : semanticColors.INTERACTIVE_NORMAL },
-          ]}
+          key={vstorage.enabled ? "on" : "off"}
+          style={styles.actionIcon}
           source={{
             uri: vstorage.enabled
-              ? "https://files.catbox.moe/qsvl6n.png" // ON icon (white)
-              : "https://files.catbox.moe/6jbhby.png", // OFF icon (white)
+              ? "https://files.catbox.moe/qsvl6n.png"
+              : "https://files.catbox.moe/6jbhby.png",
           }}
+          tintColor={
+            vstorage.enabled 
+            ? "#ffb3d4" 
+            : semanticColors.INTERACTIVE_NORMAL
+          }
         />
       </RN.Pressable>
     </RN.View>
