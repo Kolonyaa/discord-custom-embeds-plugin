@@ -33,7 +33,9 @@ const styles = stylesheet.createThemedStyleSheet({
 export default function FloatingPill() {
   useProxy(vstorage);
 
-  const handleToggle = () => {
+  const handleToggle = (e: any) => {
+    e.stopPropagation();
+    e.preventDefault();
     vstorage.enabled = !vstorage.enabled;
   };
 
@@ -50,6 +52,10 @@ export default function FloatingPill() {
       <RN.Pressable
         android_ripple={styles.androidRipple}
         onPress={handleToggle}
+        onTouchStart={(e) => e.stopPropagation()}
+        onTouchEnd={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        onMouseUp={(e) => e.stopPropagation()}
         style={styles.actionButton}
       >
         <RN.Image
@@ -57,8 +63,8 @@ export default function FloatingPill() {
           style={styles.actionIcon}
           source={{
             uri: vstorage.enabled
-              ? "https://files.catbox.moe/qsvl6n.png" // White locked icon
-              : "https://files.catbox.moe/6jbhby.png", // White unlocked icon
+              ? "https://files.catbox.moe/qsvl6n.png"
+              : "https://files.catbox.moe/6jbhby.png",
           }}
           tintColor={vstorage.enabled ? "#ffb3d4" : "#B9BBBE"}
         />
