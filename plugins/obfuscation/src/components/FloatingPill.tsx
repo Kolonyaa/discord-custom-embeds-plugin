@@ -56,8 +56,8 @@ export default function FloatingPill() {
           style={styles.actionIcon}
           source={{
             uri: vstorage.enabled
-              ? "https://files.catbox.moe/6jbhby.png" // Locked icon (white PNG)
-              : "https://files.catbox.moe/qsvl6n.png", // Unlocked icon (white PNG)
+              ? "https://files.catbox.moe/qsvl6n.png"
+              : "https://files.catbox.moe/6jbhby.png",
           }}
           tintColor={vstorage.enabled ? "#ffb3d4" : semanticColors.INTERACTIVE_NORMAL}
         />
