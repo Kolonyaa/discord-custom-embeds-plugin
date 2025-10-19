@@ -60,7 +60,7 @@ export default function FloatingPill() {
               ? "https://files.catbox.moe/qsvl6n.png" // White locked icon
               : "https://files.catbox.moe/6jbhby.png", // White unlocked icon
           }}
-          tintColor={vstorage.enabled ? "#ffb3d4" : semanticColors.INTERACTIVE_NORMAL}
+          tintColor={vstorage.enabled ? "#ffb3d4" : "#B9BBBE"}
         />
       </RN.Pressable>
     </RN.View>
