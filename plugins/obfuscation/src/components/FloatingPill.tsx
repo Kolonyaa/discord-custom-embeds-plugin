@@ -22,6 +22,8 @@ const styles = stylesheet.createThemedStyleSheet({
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: semanticColors.BACKGROUND_SECONDARY,
+    marginLeft: 8,
+    marginTop: -4,
   },
   actionIcon: {
     tintColor: semanticColors.INTERACTIVE_NORMAL,
@@ -48,8 +50,8 @@ export default function FloatingPill() {
       style={{
         flexDirection: "row",
         position: "absolute",
-        right: 8,
-        bottom: 64,
+        right: 0, // Changed from fixed right to 0
+        top: -ACTION_ICON_SIZE, // Use top positioning instead of bottom
         zIndex: 9999,
       }}
     >
