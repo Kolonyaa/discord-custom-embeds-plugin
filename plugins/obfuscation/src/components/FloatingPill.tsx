@@ -21,7 +21,7 @@ const styles = stylesheet.createThemedStyleSheet({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: semanticColors.BACKGROUND_SECONDARY,
+    backgroundColor: semanticColors.BACKGROUND_SECONDARY_ALT,
     marginLeft: 8,
     marginTop: -4,
   },
