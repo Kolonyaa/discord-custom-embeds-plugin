@@ -8,7 +8,7 @@ const Messages = findByProps("sendMessage", "editMessage", "receiveMessage");
 const MessageStore = findByStoreName("MessageStore");
 const RowManager = findByName("RowManager");
 
-// Safely get EmojiStore
+// Safely get EmojiStore (optional)
 let getCustomEmojiById: any = null;
 try {
   const EmojiStore = findByStoreName("EmojiStore");
@@ -17,26 +17,18 @@ try {
   console.warn("[ObfuscationPlugin] EmojiStore not available, emoji rendering disabled");
 }
 
-// Base emoji URL
-const BASE_EMOJI_URL = "https://cdn.discordapp.com/emojis/1429170621891477615.webp?size=48&quality=lossless";
-
-// This regex is used to detect plugin messages
-const EMOJI_REGEX = /<https:\/\/cdn\.discordapp\.com\/emojis\/1429170621891477615\.webp\?size=48&quality=lossless>/;
+// Invisible marker sequence (not shown on non-plugin clients)
+const INVISIBLE_MARKER = "\u200b\u200d\u200b"; // zero-width space + joiner + space
 
 // Helper functions
-function createEmojiUrl(): string {
-  // Wrapped in < > so that plugin can detect it but Discord’s native client doesn’t render as link
-  return `<${BASE_EMOJI_URL}>`;
-}
-
-function hasObfuscationEmoji(content: string): boolean {
-  return content?.includes(BASE_EMOJI_URL);
+function hasObfuscationMarker(content: string): boolean {
+  return content?.includes(INVISIBLE_MARKER);
 }
 
 export function applyPatches() {
   const patches = [];
 
-  console.log("[ObfuscationPlugin] Applying modified patches...");
+  console.log("[ObfuscationPlugin] Applying invisible-marker patches...");
 
   // PATCH 1: Outgoing messages
   patches.push(
@@ -47,26 +39,23 @@ export function applyPatches() {
 
         if (!vstorage.enabled) return;
         if (!content || !vstorage.secret) return;
-        if (hasObfuscationEmoji(content)) return;
+        if (hasObfuscationMarker(content)) return;
 
         console.log("[ObfuscationPlugin] Sending message:", content);
 
         const scrambled = scramble(content, vstorage.secret);
         console.log("[ObfuscationPlugin] Scrambled to:", scrambled);
 
-        // Invisible zero-width marker (U+200B) before emoji so plugin can detect but non-plugin users won't see
-        const INVISIBLE_MARKER = "\u200B"; // zero-width space
-
-        // For plugin users, the emoji will still render (since they look for the marker)
-        // For non-plugin users, the <url> gets stripped by Discord automatically since it's not visible text
-        msg.content = `${INVISIBLE_MARKER}${createEmojiUrl()} ${scrambled}`;
+        // Non-plugin clients will not see the INVISIBLE_MARKER at all.
+        // Plugin users detect it and render the emoji indicator locally.
+        msg.content = `${INVISIBLE_MARKER}${scrambled}`;
       } catch (e) {
         console.error("[ObfuscationPlugin] Error in sendMessage patch:", e);
       }
     })
   );
 
-  // PATCH 2: Incoming message decoding
+  // PATCH 2: Incoming message decoding (for plugin users)
   patches.push(
     before("generate", RowManager.prototype, ([data]) => {
       try {
@@ -75,20 +64,18 @@ export function applyPatches() {
         if (!message?.content) return;
 
         const content = message.content;
-        if (!hasObfuscationEmoji(content)) return;
+        if (!hasObfuscationMarker(content)) return;
 
-        const emojiMatch = content.match(EMOJI_REGEX);
-        if (!emojiMatch) return;
-
-        const wrappedEmojiUrl = emojiMatch[0];
-        const encryptedBody = content.slice(content.indexOf(wrappedEmojiUrl) + wrappedEmojiUrl.length).trim();
-
+        const encryptedBody = content.replace(INVISIBLE_MARKER, "").trim();
         if (!vstorage.secret || !encryptedBody) return;
 
         const decoded = unscramble(encryptedBody, vstorage.secret);
         console.log("[ObfuscationPlugin] Decoded:", decoded);
 
-        // Replace message content with emoji + readable text
+        // Insert the emoji locally before the message for plugin users
+        const INDICATOR_EMOJI_URL = "https://cdn.discordapp.com/emojis/1429170621891477615.webp?size=48&quality=lossless";
+        const wrappedEmojiUrl = `<${INDICATOR_EMOJI_URL}>`;
+
         data.message.content = `${wrappedEmojiUrl} ${decoded}`;
       } catch (e) {
         console.error("[ObfuscationPlugin] Error decoding message:", e);
@@ -96,7 +83,7 @@ export function applyPatches() {
     })
   );
 
-  // PATCH 3: Emoji rendering (unchanged except with marker-safe handling)
+  // PATCH 3: Emoji rendering (for plugin users)
   if (getCustomEmojiById) {
     patches.push(
       after("generate", RowManager.prototype, ([data], row) => {
@@ -142,7 +129,7 @@ export function applyPatches() {
     console.warn("[ObfuscationPlugin] Skipping emoji rendering patch - getCustomEmojiById not available");
   }
 
-  // PATCH 4: Reprocess old messages (so already-sent ones get decoded)
+  // PATCH 4: Reprocess already existing messages
   const reprocessExistingMessages = () => {
     try {
       console.log("[ObfuscationPlugin] Reprocessing messages...");
@@ -155,7 +142,7 @@ export function applyPatches() {
             if (!messages) return;
 
             Object.values(messages).forEach((msg: any) => {
-              if (msg && hasObfuscationEmoji(msg.content)) {
+              if (msg && hasObfuscationMarker(msg.content)) {
                 FluxDispatcher.dispatch({
                   type: "MESSAGE_UPDATE",
                   message: { ...msg },
