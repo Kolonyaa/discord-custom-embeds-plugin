@@ -3,7 +3,6 @@ import { ReactNative as RN } from "@vendetta/metro/common";
 import { stylesheet } from "@vendetta/metro/common";
 import { semanticColors } from "@vendetta/ui";
 import { useProxy } from "@vendetta/storage";
-import { getAssetIDByName } from "@vendetta/ui/assets";
 import { vstorage } from "../storage";
 
 const ACTION_ICON_SIZE = 40;
@@ -26,15 +25,8 @@ const styles = stylesheet.createThemedStyleSheet({
     marginTop: -4,
   },
   actionIcon: {
-    tintColor: semanticColors.INTERACTIVE_NORMAL,
     width: ACTION_ICON_SIZE * 0.6,
     height: ACTION_ICON_SIZE * 0.6,
-  },
-  enabledIcon: {
-    tintColor: "#ffb3d4",
-  },
-  disabledIcon: {
-    tintColor: semanticColors.INTERACTIVE_NORMAL,
   },
 });
 
@@ -63,13 +55,13 @@ export default function FloatingPill() {
         <RN.Image
           style={[
             styles.actionIcon,
-            !vstorage.enabled && { tintColor: semanticColors.INTERACTIVE_NORMAL }, // gray only when off
-            // do NOT apply tint when enabled
+            // Apply gray tint only when disabled; no tint when enabled
+            !vstorage.enabled && { tintColor: semanticColors.INTERACTIVE_NORMAL },
           ]}
           source={{
             uri: vstorage.enabled
-              ? "https://files.catbox.moe/6jbhby.png" // already pink, no tint
-              : "https://files.catbox.moe/qsvl6n.png", // white, apply gray tint
+              ? "https://files.catbox.moe/6jbhby.png" // pink icon
+              : "https://files.catbox.moe/qsvl6n.png", // white icon
           }}
         />
       </RN.Pressable>
