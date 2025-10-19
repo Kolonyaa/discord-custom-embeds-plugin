@@ -50,8 +50,8 @@ export default function FloatingPill() {
       style={{
         flexDirection: "row",
         position: "absolute",
-        right: 0, // Changed from fixed right to 0
-        top: -ACTION_ICON_SIZE, // Use top positioning instead of bottom
+        right: ACTION_ICON_SIZE + 12, // Adjust this value to align with other buttons
+        top: -ACTION_ICON_SIZE,
         zIndex: 9999,
       }}
     >
