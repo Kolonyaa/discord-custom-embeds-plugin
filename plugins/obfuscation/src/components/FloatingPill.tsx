@@ -21,7 +21,7 @@ const styles = stylesheet.createThemedStyleSheet({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: semanticColors.BACKGROUND_SECONDARY_ALT,
+    backgroundColor: semanticColors.BACKGROUND_TERTIARY, // Darker background to match input box
   },
   actionIcon: {
     tintColor: semanticColors.INTERACTIVE_NORMAL,
@@ -32,7 +32,7 @@ const styles = stylesheet.createThemedStyleSheet({
     tintColor: "#ffb3d4", // Your pink color for ON
   },
   disabledIcon: {
-    tintColor: semanticColors.INTERACTIVE_NORMAL, // Grey for OFF
+    tintColor: semanticColors.INTERACTIVE_MUTED, // Darker grey for OFF
   },
 });
 
@@ -48,8 +48,8 @@ export default function FloatingPill() {
       style={{
         flexDirection: "row",
         position: "absolute",
-        right: 12, // Changed from left to right
-        bottom: 60, // Adjust this as needed
+        right: 16, // Increased from 12 to move slightly more to the right
+        bottom: 56, // Increased from 60 to move slightly higher up
         zIndex: 9999,
       }}
     >
