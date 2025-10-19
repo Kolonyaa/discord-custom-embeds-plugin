@@ -34,7 +34,7 @@ const styles = stylesheet.createThemedStyleSheet({
     tintColor: "#ffb3d4",
   },
   disabledIcon: {
-    tintColor: semanticColors.INTERACTIVE_MUTED,
+    tintColor: semanticColors.INTERACTIVE_NORMAL,
   },
 });
 
