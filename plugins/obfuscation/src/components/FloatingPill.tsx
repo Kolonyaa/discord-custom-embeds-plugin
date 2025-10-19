@@ -56,12 +56,16 @@ export default function FloatingPill() {
           style={[
             styles.actionIcon,
             {
-              // Dynamically set tintColor based on enabled state
-              tintColor: vstorage.enabled ? "#ffb3d4" : semanticColors.INTERACTIVE_NORMAL,
+              // Apply gray tint only to the OFF icon, pink tint only to the ON icon
+              tintColor: vstorage.enabled
+                ? "#ffb3d4" // pink for enabled
+                : semanticColors.INTERACTIVE_NORMAL, // gray for disabled
             },
           ]}
           source={{
-            uri: "https://files.catbox.moe/qsvl6n.png", // always white PNG
+            uri: vstorage.enabled
+              ? "https://files.catbox.moe/6jbhby.png" // ON image (white PNG)
+              : "https://files.catbox.moe/qsvl6n.png", // OFF image (white PNG)
           }}
         />
       </RN.Pressable>
