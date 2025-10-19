@@ -33,9 +33,7 @@ const styles = stylesheet.createThemedStyleSheet({
 export default function FloatingPill() {
   useProxy(vstorage);
 
-  const handleToggle = (e: any) => {
-    e.stopPropagation();
-    e.preventDefault();
+  const handleToggle = () => {
     vstorage.enabled = !vstorage.enabled;
   };
 
@@ -48,15 +46,13 @@ export default function FloatingPill() {
         top: -ACTION_ICON_SIZE,
         zIndex: 9999,
       }}
+      pointerEvents="box-none" // <--- allows touches only to children
     >
       <RN.Pressable
         android_ripple={styles.androidRipple}
         onPress={handleToggle}
-        onTouchStart={(e) => e.stopPropagation()}
-        onTouchEnd={(e) => e.stopPropagation()}
-        onMouseDown={(e) => e.stopPropagation()}
-        onMouseUp={(e) => e.stopPropagation()}
         style={styles.actionButton}
+        pointerEvents="auto" // <--- make sure the button itself captures touches
       >
         <RN.Image
           key={vstorage.enabled ? "on" : "off"}
