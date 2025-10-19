@@ -21,7 +21,8 @@ const styles = stylesheet.createThemedStyleSheet({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: semanticColors.BACKGROUND_TERTIARY,
+    backgroundColor: semanticColors.BACKGROUND_MODIFIER_ACCENT,
+  },
   actionIcon: {
     tintColor: semanticColors.INTERACTIVE_NORMAL,
     width: ACTION_ICON_SIZE * 0.6,
@@ -31,7 +32,7 @@ const styles = stylesheet.createThemedStyleSheet({
     tintColor: "#ffb3d4",
   },
   disabledIcon: {
-    tintColor: semanticColors.INPUT_BACKGROUND,
+    tintColor: semanticColors.INTERACTIVE_NORMAL,
   },
 });
 
