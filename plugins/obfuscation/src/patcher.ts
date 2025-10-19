@@ -74,9 +74,9 @@ export function applyPatches() {
 
         // Insert the emoji locally before the message for plugin users
         const INDICATOR_EMOJI_URL = "https://cdn.discordapp.com/emojis/1429170621891477615.webp?size=48&quality=lossless";
-        const wrappedEmojiUrl = `d<d${INDICATOR_EMOJI_URL}>`;
+        const wrappedEmojiUrl = `<${INDICATOR_EMOJI_URL}>`;
 
-        data.message.content = `${wrappedEmojiUrl}a${decoded}`;
+        data.message.content = `${wrappedEmojiUrl}${decoded}`;
       } catch (e) {
         console.error("[ObfuscationPlugin] Error decoding message:", e);
       }
