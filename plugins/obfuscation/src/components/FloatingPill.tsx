@@ -14,7 +14,8 @@ const styles = stylesheet.createThemedStyleSheet({
     backgroundColor: "transparent",
     borderRadius: 8,
     marginRight: 8,
-    marginTop: -12,
+    // Remove negative margin
+    marginBottom: 8, // Add some bottom margin instead
     flexDirection: "row",
     alignSelf: "flex-end",
   },
