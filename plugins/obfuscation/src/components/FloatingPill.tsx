@@ -63,12 +63,13 @@ export default function FloatingPill() {
         <RN.Image
           style={[
             styles.actionIcon,
-            !vstorage.enabled && { tintColor: semanticColors.INTERACTIVE_NORMAL }, // gray tint only when off
+            !vstorage.enabled && { tintColor: semanticColors.INTERACTIVE_NORMAL }, // gray only when off
+            // do NOT apply tint when enabled
           ]}
           source={{
             uri: vstorage.enabled
-              ? "https://files.catbox.moe/qsvl6n.png" 
-              : "https://files.catbox.moe/6jbhby.png",
+              ? "https://files.catbox.moe/6jbhby.png" // already pink, no tint
+              : "https://files.catbox.moe/qsvl6n.png", // white, apply gray tint
           }}
         />
       </RN.Pressable>
