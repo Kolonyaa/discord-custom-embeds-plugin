@@ -11,20 +11,21 @@ const styles = stylesheet.createThemedStyleSheet({
     cornerRadius: 8,
   } as any,
   container: {
-    backgroundColor: "transparent",
+    backgroundColor: semanticColors.BACKGROUND_SECONDARY,
     borderRadius: 8,
-    marginRight: 8,
-    // Remove negative margin
-    marginBottom: 8, // Add some bottom margin instead
+    position: "absolute",
+    bottom: 60, // Adjust this value to position above input box
+    right: 12,
     flexDirection: "row",
-    alignSelf: "flex-end",
+    zIndex: 9999, // Ensure it's above other elements
+    elevation: 9999, // For Android
   },
   text: {
     color: semanticColors.TEXT_NORMAL,
     fontSize: 12,
     fontWeight: "600",
     paddingHorizontal: 8,
-    paddingVertical: 8,
+    paddingVertical: 6, // Reduced padding
   },
   enabled: {
     color: "#ffb3d4",
