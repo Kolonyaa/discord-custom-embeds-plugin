@@ -63,9 +63,13 @@ export default function FloatingPill() {
         <RN.Image
           style={[
             styles.actionIcon,
-            vstorage.enabled ? styles.enabledIcon : styles.disabledIcon,
+            { tintColor: vstorage.enabled ? "#ffb3d4" : semanticColors.INTERACTIVE_NORMAL },
           ]}
-          source={getAssetIDByName("EyeIcon")}
+          source={{
+            uri: vstorage.enabled
+              ? "https://files.catbox.moe/6jbhby.png"
+              : "https://files.catbox.moe/qsvl6n.png",
+          }}
         />
       </RN.Pressable>
     </RN.View>
