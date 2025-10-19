@@ -8,7 +8,7 @@ const Messages = findByProps("sendMessage", "editMessage", "receiveMessage");
 const MessageStore = findByStoreName("MessageStore");
 const RowManager = findByName("RowManager");
 
-// Optional: EmojiStore (for plugin-side emoji rendering)
+// Safely get EmojiStore (optional)
 let getCustomEmojiById: any = null;
 try {
   const EmojiStore = findByStoreName("EmojiStore");
@@ -17,13 +17,10 @@ try {
   console.warn("[ObfuscationPlugin] EmojiStore not available, emoji rendering disabled");
 }
 
-// Invisible marker (used for plugin detection)
+// Invisible marker sequence (not shown on non-plugin clients)
 const INVISIBLE_MARKER = "\u200b\u200d\u200b"; // zero-width space + joiner + space
 
-// Hidden wrapper markers (so we can embed scrambled data invisibly)
-const HIDDEN_PREFIX = "\u200b\u200c\u200b";
-const HIDDEN_SUFFIX = "\u200b\u200c\u200d";
-
+// Helper functions
 function hasObfuscationMarker(content: string): boolean {
   return content?.includes(INVISIBLE_MARKER);
 }
@@ -31,7 +28,7 @@ function hasObfuscationMarker(content: string): boolean {
 export function applyPatches() {
   const patches = [];
 
-  console.log("[ObfuscationPlugin] Applying final version patches...");
+  console.log("[ObfuscationPlugin] Applying invisible-marker patches...");
 
   // PATCH 1: Outgoing messages
   patches.push(
@@ -49,16 +46,16 @@ export function applyPatches() {
         const scrambled = scramble(content, vstorage.secret);
         console.log("[ObfuscationPlugin] Scrambled to:", scrambled);
 
-        // Non-plugin users see only “[encrypted message]”.
-        // Plugin users will detect INVISIBLE_MARKER + hidden scrambled section.
-        msg.content = `${INVISIBLE_MARKER}[encrypted message]${HIDDEN_PREFIX}${scrambled}${HIDDEN_SUFFIX}`;
+        // Non-plugin clients will not see the INVISIBLE_MARKER at all.
+        // Plugin users detect it and render the emoji indicator locally.
+        msg.content = `${INVISIBLE_MARKER}${scrambled}`;
       } catch (e) {
         console.error("[ObfuscationPlugin] Error in sendMessage patch:", e);
       }
     })
   );
 
-  // PATCH 2: Incoming message decoding (plugin users only)
+  // PATCH 2: Incoming message decoding (for plugin users)
   patches.push(
     before("generate", RowManager.prototype, ([data]) => {
       try {
@@ -69,20 +66,14 @@ export function applyPatches() {
         const content = message.content;
         if (!hasObfuscationMarker(content)) return;
 
-        // Extract the scrambled section from hidden wrapper markers
-        const start = content.indexOf(HIDDEN_PREFIX);
-        const end = content.indexOf(HIDDEN_SUFFIX, start + HIDDEN_PREFIX.length);
-        if (start === -1 || end === -1) return;
-
-        const encryptedBody = content.slice(start + HIDDEN_PREFIX.length, end);
+        const encryptedBody = content.replace(INVISIBLE_MARKER, "").trim();
         if (!vstorage.secret || !encryptedBody) return;
 
         const decoded = unscramble(encryptedBody, vstorage.secret);
         console.log("[ObfuscationPlugin] Decoded:", decoded);
 
-        // Insert emoji locally before decoded text for plugin users
-        const INDICATOR_EMOJI_URL =
-          "https://cdn.discordapp.com/emojis/1429170621891477615.webp?size=48&quality=lossless";
+        // Insert the emoji locally before the message for plugin users
+        const INDICATOR_EMOJI_URL = "https://cdn.discordapp.com/emojis/1429170621891477615.webp?size=48&quality=lossless";
         const wrappedEmojiUrl = `<${INDICATOR_EMOJI_URL}>`;
 
         data.message.content = `${wrappedEmojiUrl} ${decoded}`;
@@ -105,9 +96,7 @@ export function applyPatches() {
             for (let i = 0; i < message.content.length; i++) {
               const el = message.content[i];
               if (el && el.type === "link" && el.target) {
-                const match = el.target.match(
-                  /https:\/\/cdn\.discordapp\.com\/emojis\/(\d+)\.\w+/
-                );
+                const match = el.target.match(/https:\/\/cdn\.discordapp\.com\/emojis\/(\d+)\.\w+/);
                 if (!match) continue;
 
                 const url = `${match[0]}?size=128`;
@@ -137,9 +126,7 @@ export function applyPatches() {
       })
     );
   } else {
-    console.warn(
-      "[ObfuscationPlugin] Skipping emoji rendering patch - getCustomEmojiById not available"
-    );
+    console.warn("[ObfuscationPlugin] Skipping emoji rendering patch - getCustomEmojiById not available");
   }
 
   // PATCH 4: Reprocess already existing messages
@@ -151,7 +138,7 @@ export function applyPatches() {
         try {
           const channels = MessageStore.getMutableMessages?.() ?? {};
 
-          Object.entries(channels).forEach(([_, messages]: [string, any]) => {
+          Object.entries(channels).forEach(([channelId, messages]: [string, any]) => {
             if (!messages) return;
 
             Object.values(messages).forEach((msg: any) => {
@@ -176,6 +163,6 @@ export function applyPatches() {
 
   return () => {
     console.log("[ObfuscationPlugin] Removing patches...");
-    patches.forEach((unpatch) => unpatch());
+    patches.forEach(unpatch => unpatch());
   };
 }

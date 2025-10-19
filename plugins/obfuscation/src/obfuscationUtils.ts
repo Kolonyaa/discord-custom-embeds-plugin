@@ -42,6 +42,55 @@ function getKeystream(secret: string, iv: number, length: number): Uint8Array {
   return ks;
 }
 
+// Braille pattern utilities
+function bytesToBraille(data: Uint8Array): string {
+  let result = '';
+  
+  for (let i = 0; i < data.length; i++) {
+    const byte = data[i];
+    
+    // Each byte becomes 4 Braille characters (2 bits per Braille char)
+    for (let j = 0; j < 4; j++) {
+      const twoBits = (byte >> (6 - j * 2)) & 0x03;
+      
+      // Map 2-bit patterns to Braille (using the first 4 patterns: ⠀⠁⠂⠃)
+      // Braille Unicode range: U+2800 to U+28FF
+      const brailleChar = String.fromCharCode(0x2800 + twoBits);
+      result += brailleChar;
+    }
+  }
+  
+  return result;
+}
+
+function brailleToBytes(brailleStr: string): Uint8Array {
+  const byteCount = brailleStr.length / 4;
+  if (!Number.isInteger(byteCount)) {
+    throw new Error("Invalid Braille string length");
+  }
+  
+  const result = new Uint8Array(byteCount);
+  
+  for (let i = 0; i < byteCount; i++) {
+    let byte = 0;
+    
+    for (let j = 0; j < 4; j++) {
+      const brailleChar = brailleStr.charAt(i * 4 + j);
+      const brailleCode = brailleChar.charCodeAt(0) - 0x2800;
+      
+      if (brailleCode < 0 || brailleCode > 3) {
+        throw new Error("Invalid Braille character");
+      }
+      
+      byte = (byte << 2) | brailleCode;
+    }
+    
+    result[i] = byte;
+  }
+  
+  return result;
+}
+
 export function scramble(text: string, secret: string): string {
   const encoder = new TextEncoder();
   const plain = encoder.encode(text);
@@ -58,20 +107,18 @@ export function scramble(text: string, secret: string): string {
   combined[3] = iv & 0xff;
   combined.set(cipher, 4);
 
-  let s = "";
-  for (let i = 0; i < combined.length; i++) s += String.fromCharCode(combined[i]);
-  return btoa(s);
+  // Use Braille encoding instead of Base64
+  return bytesToBraille(combined);
 }
 
-export function unscramble(base64: string, secret: string): string {
-  const raw = atob(base64);
-  const data = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) data[i] = raw.charCodeAt(i);
+export function unscramble(brailleStr: string, secret: string): string {
+  // Convert Braille back to bytes
+  const combined = brailleToBytes(brailleStr);
 
-  if (data.length < 4) throw new Error("Invalid data");
+  if (combined.length < 4) throw new Error("Invalid data");
 
-  const iv = ((data[0] << 24) >>> 0) | (data[1] << 16) | (data[2] << 8) | data[3];
-  const cipher = data.slice(4);
+  const iv = ((combined[0] << 24) >>> 0) | (combined[1] << 16) | (combined[2] << 8) | combined[3];
+  const cipher = combined.slice(4);
 
   const ks = getKeystream(secret, iv, cipher.length);
   const plain = new Uint8Array(cipher.length);
