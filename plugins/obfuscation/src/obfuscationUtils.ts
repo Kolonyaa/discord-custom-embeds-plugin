@@ -42,50 +42,31 @@ function getKeystream(secret: string, iv: number, length: number): Uint8Array {
   return ks;
 }
 
-// Braille pattern utilities
+// Braille pattern utilities using ALL 256 characters
 function bytesToBraille(data: Uint8Array): string {
   let result = '';
   
   for (let i = 0; i < data.length; i++) {
-    const byte = data[i];
-    
-    // Each byte becomes 4 Braille characters (2 bits per Braille char)
-    for (let j = 0; j < 4; j++) {
-      const twoBits = (byte >> (6 - j * 2)) & 0x03;
-      
-      // Map 2-bit patterns to Braille (using the first 4 patterns: ⠀⠁⠂⠃)
-      // Braille Unicode range: U+2800 to U+28FF
-      const brailleChar = String.fromCharCode(0x2800 + twoBits);
-      result += brailleChar;
-    }
+    // Each byte directly maps to one Braille character (0x2800 - 0x28FF)
+    const brailleChar = String.fromCharCode(0x2800 + data[i]);
+    result += brailleChar;
   }
   
   return result;
 }
 
 function brailleToBytes(brailleStr: string): Uint8Array {
-  const byteCount = brailleStr.length / 4;
-  if (!Number.isInteger(byteCount)) {
-    throw new Error("Invalid Braille string length");
-  }
+  const result = new Uint8Array(brailleStr.length);
   
-  const result = new Uint8Array(byteCount);
-  
-  for (let i = 0; i < byteCount; i++) {
-    let byte = 0;
+  for (let i = 0; i < brailleStr.length; i++) {
+    const brailleChar = brailleStr.charAt(i);
+    const brailleCode = brailleChar.charCodeAt(0) - 0x2800;
     
-    for (let j = 0; j < 4; j++) {
-      const brailleChar = brailleStr.charAt(i * 4 + j);
-      const brailleCode = brailleChar.charCodeAt(0) - 0x2800;
-      
-      if (brailleCode < 0 || brailleCode > 3) {
-        throw new Error("Invalid Braille character");
-      }
-      
-      byte = (byte << 2) | brailleCode;
+    if (brailleCode < 0 || brailleCode > 255) {
+      throw new Error("Invalid Braille character");
     }
     
-    result[i] = byte;
+    result[i] = brailleCode;
   }
   
   return result;
