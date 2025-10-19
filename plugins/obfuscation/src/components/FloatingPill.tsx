@@ -21,18 +21,17 @@ const styles = stylesheet.createThemedStyleSheet({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: semanticColors.INPUT_BACKGROUND, // #202225 - matches Discord input
-  },
+    backgroundColor: semanticColors.BACKGROUND_PRIMARY,
   actionIcon: {
     tintColor: semanticColors.INTERACTIVE_NORMAL,
     width: ACTION_ICON_SIZE * 0.6,
     height: ACTION_ICON_SIZE * 0.6,
   },
   enabledIcon: {
-    tintColor: "#ffb3d4", // Your pink color for ON
+    tintColor: "#ffb3d4",
   },
   disabledIcon: {
-    tintColor: semanticColors.INTERACTIVE_NORMAL, // #B9BBBE - perfect light grey
+    tintColor: semanticColors.INTERACTIVE_MUTED,
   },
 });
 
