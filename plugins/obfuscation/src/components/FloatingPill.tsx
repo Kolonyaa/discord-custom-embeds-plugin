@@ -21,7 +21,7 @@ const styles = stylesheet.createThemedStyleSheet({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: semanticColors.BACKGROUND_MODIFIER_ACCENT,
+    backgroundColor: semanticColors.INPUT_BACKGROUND,
   },
   actionIcon: {
     tintColor: semanticColors.INTERACTIVE_NORMAL,
