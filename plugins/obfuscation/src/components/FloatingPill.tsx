@@ -38,33 +38,44 @@ export default function FloatingPill() {
   };
 
   return (
+    // Full-screen overlay to capture touches
     <RN.View
       style={{
-        flexDirection: "row",
         position: "absolute",
-        right: ACTION_ICON_SIZE - 32,
-        top: -ACTION_ICON_SIZE,
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
         zIndex: 9999,
       }}
-      pointerEvents="box-none" // <--- allows touches only to children
+      pointerEvents="box-none" // Only children handle touches
     >
-      <RN.Pressable
-        android_ripple={styles.androidRipple}
-        onPress={handleToggle}
-        style={styles.actionButton}
-        pointerEvents="auto" // <--- make sure the button itself captures touches
+      {/* Positioned container for the button */}
+      <RN.View
+        style={{
+          position: "absolute",
+          right: ACTION_ICON_SIZE - 32,
+          top: -ACTION_ICON_SIZE,
+        }}
+        pointerEvents="auto" // Capture touches to prevent passing through
       >
-        <RN.Image
-          key={vstorage.enabled ? "on" : "off"}
-          style={styles.actionIcon}
-          source={{
-            uri: vstorage.enabled
-              ? "https://files.catbox.moe/qsvl6n.png"
-              : "https://files.catbox.moe/6jbhby.png",
-          }}
-          tintColor={vstorage.enabled ? "#ffb3d4" : "#B9BBBE"}
-        />
-      </RN.Pressable>
+        <RN.Pressable
+          android_ripple={styles.androidRipple}
+          onPress={handleToggle}
+          style={styles.actionButton}
+        >
+          <RN.Image
+            key={vstorage.enabled ? "on" : "off"}
+            style={styles.actionIcon}
+            source={{
+              uri: vstorage.enabled
+                ? "https://files.catbox.moe/qsvl6n.png"
+                : "https://files.catbox.moe/6jbhby.png",
+            }}
+            tintColor={vstorage.enabled ? "#ffb3d4" : "#B9BBBE"}
+          />
+        </RN.Pressable>
+      </RN.View>
     </RN.View>
   );
 }
