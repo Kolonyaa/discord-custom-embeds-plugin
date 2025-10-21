@@ -100,13 +100,14 @@ export default function applyAttachmentPatcher() {
         message.attachments.forEach((att) => {
           if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
             if (Embed && EmbedMedia) {
-              // Use Discord's internal constructors
+              // Use Discord's internal constructors with ALL required fields
               const imageMedia = new EmbedMedia({
                 url: "https://i.imgur.com/7dZrkGD.png",
                 proxyURL: "https://i.imgur.com/7dZrkGD.png",
                 width: 200,
                 height: 200,
                 srcIsAnimated: false
+                // Add any other required fields that might be missing
               });
 
               const embed = new Embed({
@@ -116,17 +117,37 @@ export default function applyAttachmentPatcher() {
                 thumbnail: imageMedia,
                 description: "Preview of obfuscated image",
                 color: 0x2f3136,
+                // Add body.TextColor if Embed requires it
+                body: {
+                  TextColor: 0xffffff // or find the correct value
+                }
               });
               fakeEmbeds.push(embed);
             } else {
-              // Fallback to simple structure
-              fakeEmbeds.push({
-                type: "image", 
+              // Fallback - try to find what fields are actually required
+              const embedMediaFields = {
                 url: "https://i.imgur.com/7dZrkGD.png",
-                image: {
-                  url: "https://i.imgur.com/7dZrkGD.png"
-                },
-                description: "Preview of obfuscated image"
+                proxyURL: "https://i.imgur.com/7dZrkGD.png", 
+                width: 200,
+                height: 200,
+                srcIsAnimated: false,
+                // Try adding common media fields
+                placeholder: null,
+                placeholderVersion: 0,
+                contentScanVersion: 0,
+                flags: 0
+              };
+
+              fakeEmbeds.push({
+                type: "image",
+                url: "https://i.imgur.com/7dZrkGD.png",
+                image: embedMediaFields,
+                thumbnail: embedMediaFields,
+                description: "Preview of obfuscated image",
+                color: 0x2f3136,
+                body: {
+                  TextColor: 0xffffff
+                }
               });
             }
           } else {
