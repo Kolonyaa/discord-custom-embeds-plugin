@@ -1,21 +1,92 @@
-// attachmentPatcherTest.tsx
+// attachmentPatcher.tsx
 import { after } from "@vendetta/patcher";
 import { findByName } from "@vendetta/metro";
+import { vstorage } from "./storage";
+import { unscrambleBuffer } from "./obfuscationUtils";
 import { React, ReactNative } from "@vendetta/metro/common";
 
-const { Image, View, Text } = ReactNative;
-const RowManager = findByName("RowManager");
-const ATTACHMENT_FILENAME = "obfuscated_attachment.txt";
+const { View, Image, ActivityIndicator, Text } = ReactNative;
 
-// Inline placeholder image component
-const InlineImage: React.FC = () =>
-  React.createElement(Image, {
-    source: { uri: "https://i.imgur.com/7dZrkGD.png" },
-    style: { width: 200, height: 200, resizeMode: "contain", borderRadius: 8, marginTop: 4 },
+const ATTACHMENT_FILENAME = "obfuscated_attachment.txt";
+const INVISIBLE_MARKER = "\u200b\u200d\u200b";
+
+const RowManager = findByName("RowManager");
+const filetypes = new Set(["txt"]);
+
+// Detect image type from Uint8Array
+function detectImageType(data: Uint8Array): string | null {
+  if (data.length < 4) return null;
+  if (data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return "image/jpeg";
+  if (data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47) return "image/png";
+  if (data[0] === 0x47 && data[1] === 0x49 && data[2] === 0x46) return "image/gif";
+  if (
+    data.length >= 12 &&
+    data[0] === 0x52 &&
+    data[1] === 0x49 &&
+    data[2] === 0x46 &&
+    data[3] === 0x46 &&
+    data[8] === 0x57 &&
+    data[9] === 0x45 &&
+    data[10] === 0x42 &&
+    data[11] === 0x50
+  )
+    return "image/webp";
+  return null;
+}
+
+// Inline image component
+const InlineImage: React.FC<{ attachment: any }> = ({ attachment }) => {
+  const [url, setUrl] = React.useState<string | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(false);
+
+  React.useEffect(() => {
+    (async () => {
+      try {
+        setLoading(true);
+        const response = await fetch(attachment.url);
+        const obfText = await response.text();
+        const bytes = unscrambleBuffer(obfText, vstorage.secret);
+
+        const mimeType = detectImageType(bytes) || "image/jpeg";
+        const blob = new Blob([bytes], { type: mimeType });
+        const blobUrl = URL.createObjectURL(blob);
+        setUrl(blobUrl);
+      } catch (e) {
+        console.error("[ObfuscationPlugin] Failed decoding inline image:", e);
+        setError(true);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [attachment.url]);
+
+  if (loading) return React.createElement(ActivityIndicator, { size: "small" });
+  if (error || !url)
+    return React.createElement(
+      View,
+      { style: { marginTop: 4 } },
+      React.createElement(Text, { style: { color: "red" } }, "Failed to load image")
+    );
+
+  return React.createElement(Image, {
+    source: { uri: url },
+    style: {
+      width: 200,
+      height: 200,
+      resizeMode: "contain",
+      borderRadius: 8,
+      marginTop: 4,
+    },
   });
+};
 
 export default function applyAttachmentPatcher() {
   const patches: (() => void)[] = [];
+
+  // Try to find Discord's internal embed classes
+  const Embed = findByName("Embed") || findByProps("Embed")?.Embed;
+  const EmbedMedia = findByName("EmbedMedia") || findByProps("EmbedMedia")?.EmbedMedia;
 
   if (RowManager?.prototype?.generate) {
     patches.push(
@@ -24,20 +95,99 @@ export default function applyAttachmentPatcher() {
         if (!message?.attachments?.length) return;
 
         const normalAttachments: any[] = [];
+        const fakeEmbeds: any[] = [];
 
-        message.attachments.forEach(att => {
+        // Process attachments asynchronously
+        message.attachments.forEach(async (att) => {
           if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
-            if (!row.contentChildren) row.contentChildren = [];
-            row.contentChildren.push(React.createElement(InlineImage, { key: att.id || att.filename }));
+            try {
+              // Fetch and decode the actual image data
+              const response = await fetch(att.url);
+              const obfText = await response.text();
+              const imageBytes = unscrambleBuffer(obfText, vstorage.secret);
+              
+              // Convert bytes to base64 data URL
+              const mimeType = detectImageType(imageBytes) || "image/png";
+              const base64 = btoa(String.fromCharCode(...imageBytes));
+              const dataUrl = `data:${mimeType};base64,${base64}`;
+
+              if (Embed && EmbedMedia) {
+                // Use Discord's internal constructors with the actual image data
+                const imageMedia = new EmbedMedia({
+                  url: dataUrl,
+                  proxyURL: dataUrl,
+                  width: 200,
+                  height: 200,
+                  srcIsAnimated: false
+                });
+
+                const embed = new Embed({
+                  type: "image",
+                  url: dataUrl,
+                  image: imageMedia,
+                  thumbnail: imageMedia,
+                  description: "Decoded obfuscated image",
+                  color: 0x2f3136,
+                  bodyTextColor: 0xffffff
+                });
+                fakeEmbeds.push(embed);
+              } else {
+                // Manual structure with actual image data
+                const embedMediaFields = {
+                  url: dataUrl,
+                  proxyURL: dataUrl, 
+                  width: 200,
+                  height: 200,
+                  srcIsAnimated: false
+                }; 
+
+                fakeEmbeds.push({
+                  type: "image",
+                  url: dataUrl,
+                  image: embedMediaFields,
+                  thumbnail: embedMediaFields,
+                  description: "Decoded obfuscated image",
+                  color: 0x2f3136,
+                  bodyTextColor: 0xffffff
+                });
+              }
+            } catch (error) {
+              console.error("[ObfuscationPlugin] Failed to decode attachment:", error);
+              // Fallback to placeholder if decoding fails
+              if (Embed && EmbedMedia) {
+                const imageMedia = new EmbedMedia({
+                  url: "https://i.imgur.com/7dZrkGD.png",
+                  proxyURL: "https://i.imgur.com/7dZrkGD.png",
+                  width: 200,
+                  height: 200,
+                  srcIsAnimated: false
+                });
+
+                const embed = new Embed({
+                  type: "image",
+                  url: "https://i.imgur.com/7dZrkGD.png",
+                  image: imageMedia,
+                  thumbnail: imageMedia,
+                  description: "Failed to decode image",
+                  color: 0xff0000, // Red color to indicate error
+                  bodyTextColor: 0xffffff
+                });
+                fakeEmbeds.push(embed);
+              }
+            }
           } else {
             normalAttachments.push(att);
           }
         });
 
-        message.attachments = normalAttachments; // remove handled txt
+        if (fakeEmbeds.length) {
+          if (!message.embeds) message.embeds = [];
+          message.embeds.push(...fakeEmbeds);
+          message.attachments = normalAttachments;
+        }
       })
     );
   }
 
-  return () => patches.forEach(unpatch => unpatch());
+  return () => patches.forEach((unpatch) => unpatch());
 }
