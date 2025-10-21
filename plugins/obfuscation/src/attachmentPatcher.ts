@@ -103,7 +103,12 @@ export default function applyAttachmentPatcher() {
               width: 200,
               height: 200,
 
-              bodyTextColor: 0
+              bodyTextColor: 0,
+              backgroundColor: 0,
+              borderColor: 0,
+              headerColor: 0,
+              headerText: "",
+              titleText: "Preview", // optional text above image
             });
           } else {
             normalAttachments.push(att);
