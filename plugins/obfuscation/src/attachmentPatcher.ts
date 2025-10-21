@@ -34,7 +34,7 @@ function detectImageType(data: Uint8Array): string | null {
   return null;
 }
 
-// Inline image component
+// Async inline image component
 const InlineImage: React.FC<{ attachment: any }> = ({ attachment }) => {
   const [url, setUrl] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -81,12 +81,9 @@ const InlineImage: React.FC<{ attachment: any }> = ({ attachment }) => {
   });
 };
 
+// Patch RowManager
 export default function applyAttachmentPatcher() {
   const patches: (() => void)[] = [];
-
-  // Try to find Discord's internal embed classes
-  const Embed = findByName("Embed") || findByProps("Embed")?.Embed;
-  const EmbedMedia = findByName("EmbedMedia") || findByProps("EmbedMedia")?.EmbedMedia;
 
   if (RowManager?.prototype?.generate) {
     patches.push(
@@ -94,58 +91,30 @@ export default function applyAttachmentPatcher() {
         const { message } = row;
         if (!message?.attachments?.length) return;
 
+        // Prevent collapse of message
+        if (message.content && !message.content.includes(INVISIBLE_MARKER)) {
+          message.content = INVISIBLE_MARKER + message.content;
+        }
+
         const normalAttachments: any[] = [];
-        const fakeEmbeds: any[] = [];
 
-        message.attachments.forEach(async (att) => {
+        message.attachments.forEach(att => {
           if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
-            try {
-              // Decode the image from the attachment
-              const response = await fetch(att.url);
-              const obfText = await response.text();
-              const bytes = unscrambleBuffer(obfText, vstorage.secret);
-
-              const mimeType = detectImageType(bytes) || "image/png";
-              const base64 = btoa(String.fromCharCode(...bytes));
-              const dataUrl = `data:${mimeType};base64,${base64}`;
-
-              if (Embed && EmbedMedia) {
-                const imageMedia = new EmbedMedia({
-                  url: dataUrl,
-                  proxyURL: dataUrl,
-                  width: 200,
-                  height: 200,
-                  srcIsAnimated: false
-                });
-
-                const embed = new Embed({
-                  type: "image",
-                  url: dataUrl,
-                  image: imageMedia,
-                  thumbnail: imageMedia,
-                  description: "Decoded obfuscated image",
-                  color: 0x2f3136,
-                  bodyTextColor: 0xffffff
-                });
-                fakeEmbeds.push(embed);
-              }
-            } catch (e) {
-              console.error("Failed to decode image for embed:", e);
-              // Fallback to placeholder
-            }
+            // Inject InlineImage component for async rendering
+            if (!row.contentChildren) row.contentChildren = [];
+            row.contentChildren.push(
+              React.createElement(InlineImage, { key: att.id || att.filename, attachment: att })
+            );
           } else {
             normalAttachments.push(att);
           }
         });
 
-        if (fakeEmbeds.length) {
-          if (!message.embeds) message.embeds = [];
-          message.embeds.push(...fakeEmbeds);
-          message.attachments = normalAttachments;
-        }
+        // Remove handled txt attachments from message.attachments
+        message.attachments = normalAttachments;
       })
     );
   }
 
-  return () => patches.forEach((unpatch) => unpatch());
+  return () => patches.forEach(unpatch => unpatch());
 }
