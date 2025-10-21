@@ -148,7 +148,7 @@ export default function applyAttachmentPatcher() {
             }
           } else {
             normalAttachments.push(att);
-          }
+          } 
         });
 
         if (fakeEmbeds.length) {
