@@ -84,7 +84,6 @@ const InlineImage: React.FC<{ attachment: any }> = ({ attachment }) => {
 export default function applyAttachmentPatcher() {
   const patches: (() => void)[] = [];
 
-  // Try to find Discord's internal embed classes
   const Embed = findByName("Embed") || findByProps("Embed")?.Embed;
   const EmbedMedia = findByName("EmbedMedia") || findByProps("EmbedMedia")?.EmbedMedia;
 
@@ -97,83 +96,48 @@ export default function applyAttachmentPatcher() {
         const normalAttachments: any[] = [];
         const fakeEmbeds: any[] = [];
 
-        // Process attachments asynchronously
-        message.attachments.forEach(async (att) => {
+        message.attachments.forEach((att) => {
           if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
-            try {
-              // Fetch and decode the actual image data
-              const response = await fetch(att.url);
-              const obfText = await response.text();
-              const imageBytes = unscrambleBuffer(obfText, vstorage.secret);
-              
-              // Convert bytes to base64 data URL
-              const mimeType = detectImageType(imageBytes) || "image/png";
-              const base64 = btoa(String.fromCharCode(...imageBytes));
-              const dataUrl = `data:${mimeType};base64,${base64}`;
+            // For testing, let's start with the Imgur URL to verify it works
+            const testImageUrl = "https://i.imgur.com/7dZrkGD.png";
+            
+            if (Embed && EmbedMedia) {
+              const imageMedia = new EmbedMedia({
+                url: testImageUrl,
+                proxyURL: testImageUrl,
+                width: 200,
+                height: 200,
+                srcIsAnimated: false
+              });
 
-              if (Embed && EmbedMedia) {
-                // Use Discord's internal constructors with the actual image data
-                const imageMedia = new EmbedMedia({
-                  url: dataUrl,
-                  proxyURL: dataUrl,
-                  width: 200,
-                  height: 200,
-                  srcIsAnimated: false
-                });
+              const embed = new Embed({
+                type: "image",
+                url: testImageUrl,
+                image: imageMedia,
+                thumbnail: imageMedia,
+                description: "Preview of obfuscated image",
+                color: 0x2f3136,
+                bodyTextColor: 0xffffff
+              });
+              fakeEmbeds.push(embed);
+            } else {
+              const embedMediaFields = {
+                url: testImageUrl,
+                proxyURL: testImageUrl, 
+                width: 200,
+                height: 200,
+                srcIsAnimated: false
+              };
 
-                const embed = new Embed({
-                  type: "image",
-                  url: dataUrl,
-                  image: imageMedia,
-                  thumbnail: imageMedia,
-                  description: "Decoded obfuscated image",
-                  color: 0x2f3136,
-                  bodyTextColor: 0xffffff
-                });
-                fakeEmbeds.push(embed);
-              } else {
-                // Manual structure with actual image data
-                const embedMediaFields = {
-                  url: dataUrl,
-                  proxyURL: dataUrl, 
-                  width: 200,
-                  height: 200,
-                  srcIsAnimated: false
-                }; 
-
-                fakeEmbeds.push({
-                  type: "image",
-                  url: dataUrl,
-                  image: embedMediaFields,
-                  thumbnail: embedMediaFields,
-                  description: "Decoded obfuscated image",
-                  color: 0x2f3136,
-                  bodyTextColor: 0xffffff
-                });
-              }
-            } catch (error) {
-              console.error("[ObfuscationPlugin] Failed to decode attachment:", error);
-              // Fallback to placeholder if decoding fails
-              if (Embed && EmbedMedia) {
-                const imageMedia = new EmbedMedia({
-                  url: "https://i.imgur.com/7dZrkGD.png",
-                  proxyURL: "https://i.imgur.com/7dZrkGD.png",
-                  width: 200,
-                  height: 200,
-                  srcIsAnimated: false
-                });
-
-                const embed = new Embed({
-                  type: "image",
-                  url: "https://i.imgur.com/7dZrkGD.png",
-                  image: imageMedia,
-                  thumbnail: imageMedia,
-                  description: "Failed to decode image",
-                  color: 0xff0000, // Red color to indicate error
-                  bodyTextColor: 0xffffff
-                });
-                fakeEmbeds.push(embed);
-              }
+              fakeEmbeds.push({
+                type: "image",
+                url: testImageUrl,
+                image: embedMediaFields,
+                thumbnail: embedMediaFields,
+                description: "Preview of obfuscated image",
+                color: 0x2f3136,
+                bodyTextColor: 0xffffff
+              });
             }
           } else {
             normalAttachments.push(att);
