@@ -1,121 +1,147 @@
-import { findByName, findByProps } from "@vendetta/metro";
-import { FluxDispatcher, ReactNative } from "@vendetta/metro/common";
-import { after, before, instead } from "@vendetta/patcher";
+// attachmentPatcher.tsx
+import { after } from "@vendetta/patcher";
+import { findByName } from "@vendetta/metro";
 import { vstorage } from "./storage";
 import { unscrambleBuffer } from "./obfuscationUtils";
+import { React, ReactNative } from "@vendetta/metro/common";
 
-const patches = [];
-const ChannelMessages = findByProps("_channelMessages");
-const MessageRecordUtils = findByProps("updateMessageRecord", "createMessageRecord");
-const MessageRecord = findByName("MessageRecord", false);
-const RowManager = findByName("RowManager");
+const { View, Image, ActivityIndicator, Text } = ReactNative;
 
 const ATTACHMENT_FILENAME = "obfuscated_attachment.txt";
-const PLACEHOLDER_IMAGE = "https://i.imgur.com/7dZrkGD.png";
+const INVISIBLE_MARKER = "\u200b\u200d\u200b";
 
-// Modify the message record to replace txt attachments with our image
-patches.push(after("createMessageRecord", MessageRecordUtils, function ([message], record) {
-  if (!message.attachments?.length) return;
-  
-  const modifiedAttachments = [];
-  
-  for (const att of message.attachments) {
-    if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
-      // Replace the txt attachment with our image URL
-      modifiedAttachments.push({
-        ...att,
-        filename: "image.png",
-        content_type: "image/png",
-        url: PLACEHOLDER_IMAGE,
-        proxy_url: PLACEHOLDER_IMAGE,
-        // Keep track that this was originally an obfuscated attachment
-        __vml_is_obfuscated_image: true,
-        __vml_original_url: att.url
-      });
-    } else {
-      modifiedAttachments.push(att);
-    }
-  }
-  
-  if (modifiedAttachments.length !== message.attachments.length) {
-    record.attachments = modifiedAttachments;
-  }
-}));
+const RowManager = findByName("RowManager");
+const filetypes = new Set(["txt"]);
 
-patches.push(after("default", MessageRecord, ([props], record) => {
-  if (props.attachments?.length) {
-    const modifiedAttachments = [];
-    
-    for (const att of props.attachments) {
-      if (att.__vml_is_obfuscated_image) {
-        modifiedAttachments.push({
-          ...att,
-          url: PLACEHOLDER_IMAGE,
-          proxy_url: PLACEHOLDER_IMAGE,
-          content_type: "image/png",
-          filename: "image.png"
-        });
-      } else {
-        modifiedAttachments.push(att);
-      }
-    }
-    
-    if (modifiedAttachments.length !== props.attachments.length) {
-      record.attachments = modifiedAttachments;
-    }
-  }
-}));
-
-// Patch RowManager to ensure proper display
-patches.push(after("generate", RowManager.prototype, ([data], row) => {
-  if (!data.message?.attachments?.length) return;
-  
-  const { message } = data;
-  
-  // Ensure any obfuscated attachments use our placeholder image
-  message.attachments.forEach((att) => {
-    if (att.__vml_is_obfuscated_image && att.url !== PLACEHOLDER_IMAGE) {
-      att.url = PLACEHOLDER_IMAGE;
-      att.proxy_url = PLACEHOLDER_IMAGE;
-    }
-  });
-}));
-
-// Patch the attachment component to force image display
-const Attachment = findByName("Attachment") || findByProps("Attachment")?.Attachment;
-if (Attachment) {
-  patches.push(after("default", Attachment, ([props], component) => {
-    if (props.attachment?.__vml_is_obfuscated_image) {
-      return {
-        ...component,
-        props: {
-          ...props,
-          attachment: {
-            ...props.attachment,
-            url: PLACEHOLDER_IMAGE,
-            proxy_url: PLACEHOLDER_IMAGE,
-            content_type: "image/png",
-            filename: "image.png"
-          }
-        }
-      };
-    }
-    return component;
-  }));
+// Detect image type from Uint8Array
+function detectImageType(data: Uint8Array): string | null {
+  if (data.length < 4) return null;
+  if (data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return "image/jpeg";
+  if (data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47) return "image/png";
+  if (data[0] === 0x47 && data[1] === 0x49 && data[2] === 0x46) return "image/gif";
+  if (
+    data.length >= 12 &&
+    data[0] === 0x52 &&
+    data[1] === 0x49 &&
+    data[2] === 0x46 &&
+    data[3] === 0x46 &&
+    data[8] === 0x57 &&
+    data[9] === 0x45 &&
+    data[10] === 0x42 &&
+    data[11] === 0x50
+  )
+    return "image/webp";
+  return null;
 }
 
-// Also patch any message update events to maintain our image URL
-patches.push(before("dispatch", FluxDispatcher, ([event]) => {
-  if (event.type === "MESSAGE_UPDATE" && event.message?.attachments) {
-    event.message.attachments.forEach(att => {
-      if (att.__vml_is_obfuscated_image && att.url !== PLACEHOLDER_IMAGE) {
-        att.url = PLACEHOLDER_IMAGE;
-        att.proxy_url = PLACEHOLDER_IMAGE;
+// Inline image component
+const InlineImage: React.FC<{ attachment: any }> = ({ attachment }) => {
+  const [url, setUrl] = React.useState<string | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(false);
+
+  React.useEffect(() => {
+    (async () => {
+      try {
+        setLoading(true);
+        const response = await fetch(attachment.url);
+        const obfText = await response.text();
+        const bytes = unscrambleBuffer(obfText, vstorage.secret);
+
+        const mimeType = detectImageType(bytes) || "image/jpeg";
+        const blob = new Blob([bytes], { type: mimeType });
+        const blobUrl = URL.createObjectURL(blob);
+        setUrl(blobUrl);
+      } catch (e) {
+        console.error("[ObfuscationPlugin] Failed decoding inline image:", e);
+        setError(true);
+      } finally {
+        setLoading(false);
       }
-    });
-  }
-}));
+    })();
+  }, [attachment.url]);
+
+  if (loading) return React.createElement(ActivityIndicator, { size: "small" });
+  if (error || !url)
+    return React.createElement(
+      View,
+      { style: { marginTop: 4 } },
+      React.createElement(Text, { style: { color: "red" } }, "Failed to load image")
+    );
+
+  return React.createElement(Image, {
+    source: { uri: url },
+    style: {
+      width: 200,
+      height: 200,
+      resizeMode: "contain",
+      borderRadius: 8,
+      marginTop: 4,
+    },
+  });
+};
 
 export default function applyAttachmentPatcher() {
+  const patches: (() => void)[] = [];
+
+  // Try to find Discord's internal embed classes
+  const Embed = findByName("Embed") || findByProps("Embed")?.Embed;
+  const EmbedMedia = findByName("EmbedMedia") || findByProps("EmbedMedia")?.EmbedMedia;
+
+  if (RowManager?.prototype?.generate) {
+    patches.push(
+      after("generate", RowManager.prototype, (_, row) => {
+        const { message } = row;
+        if (!message?.attachments?.length) return;
+
+        const normalAttachments: any[] = [];
+        const fakeEmbeds: any[] = [];
+
+        message.attachments.forEach((att) => {
+          if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
+            if (Embed && EmbedMedia) {
+              // Use Discord's internal constructors
+              const imageMedia = new EmbedMedia({
+                url: "https://i.imgur.com/7dZrkGD.png",
+                proxyURL: "https://i.imgur.com/7dZrkGD.png",
+                width: 200,
+                height: 200,
+                srcIsAnimated: false
+              });
+
+              const embed = new Embed({
+                type: "image",
+                url: "https://i.imgur.com/7dZrkGD.png",
+                image: imageMedia,
+                thumbnail: imageMedia,
+                description: "Preview of obfuscated image",
+                color: 0x2f3136,
+              });
+              fakeEmbeds.push(embed);
+            } else {
+              // Fallback to simple structure
+              fakeEmbeds.push({
+                type: "image", 
+                url: "https://i.imgur.com/7dZrkGD.png",
+                image: {
+                  url: "https://i.imgur.com/7dZrkGD.png"
+                },
+                description: "Preview of obfuscated image"
+              });
+            }
+          } else {
+            normalAttachments.push(att);
+          }
+        });
+
+        if (fakeEmbeds.length) {
+          if (!message.embeds) message.embeds = [];
+          message.embeds.push(...fakeEmbeds);
+          message.attachments = normalAttachments;
+        }
+      })
+    );
+  }
+
   return () => patches.forEach((unpatch) => unpatch());
 }
