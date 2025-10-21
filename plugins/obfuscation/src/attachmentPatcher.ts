@@ -98,8 +98,8 @@ export default function applyAttachmentPatcher() {
             // Replace txt with a fake image embed
             fakeEmbeds.push({
               type: "image",
-              url: "https://i.imgur.com/OVdVw5k.png", // placeholder image
-              proxy_url: "https://i.imgur.com/OVdVw5k.png",
+              url: "https://i.imgur.com/7dZrkGD.png", // placeholder image
+              proxy_url: "https://i.imgur.com/7dZrkGD.png",
               width: 200,
               height: 200,
 
