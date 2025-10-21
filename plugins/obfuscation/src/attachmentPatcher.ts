@@ -88,35 +88,35 @@ export default function applyAttachmentPatcher() {
     patches.push(
       after("generate", RowManager.prototype, (_, row) => {
         const { message } = row;
-        if (!message || !message.attachments?.length) return;
-
-        // Add invisible marker to prevent collapsing
-        if (message.content && !message.content.includes(INVISIBLE_MARKER)) {
-          message.content = INVISIBLE_MARKER + message.content;
-        }
+        if (!message?.attachments?.length) return;
 
         const normalAttachments: any[] = [];
-        const inlineImages: React.ReactElement[] = [];
+        const fakeEmbeds: any[] = [];
 
         message.attachments.forEach((att) => {
-          if (att.filename === ATTACHMENT_FILENAME || filetypes.has(att.filename.toLowerCase().split(".").pop())) {
-            inlineImages.push(React.createElement(InlineImage, { key: att.id || att.filename, attachment: att }));
+          if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
+            // Replace txt with a fake image embed
+            fakeEmbeds.push({
+              type: "image",
+              url: "https://i.imgur.com/OVdVw5k.png", // placeholder image
+              proxy_url: "https://i.imgur.com/OVdVw5k.png",
+              width: 200,
+              height: 200,
+            });
           } else {
             normalAttachments.push(att);
           }
         });
 
-        // Inject inline images directly into row content children
-        if (inlineImages.length) {
-          if (!row.contentChildren) row.contentChildren = [];
-          row.contentChildren.push(...inlineImages);
+        // Inject embeds and remove original txt attachments
+        if (fakeEmbeds.length) {
+          if (!message.embeds) message.embeds = [];
+          message.embeds.push(...fakeEmbeds);
           message.attachments = normalAttachments;
         }
       })
     );
   }
 
-  return () => {
-    patches.forEach((unpatch) => unpatch());
-  };
+  return () => patches.forEach((unpatch) => unpatch());
 }
