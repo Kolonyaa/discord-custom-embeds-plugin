@@ -1,5 +1,5 @@
 // attachmentPatcher.tsx
-import { after } from "@vendetta/patcher";
+import { after, before } from "@vendetta/patcher";
 import { findByName } from "@vendetta/metro";
 import { vstorage } from "./storage";
 import { unscrambleBuffer } from "./obfuscationUtils";
@@ -85,33 +85,47 @@ export default function applyAttachmentPatcher() {
   const patches: (() => void)[] = [];
 
   if (RowManager?.prototype?.generate) {
+    // First patch: remove the text attachments and mark the message
     patches.push(
-      after("generate", RowManager.prototype, (_, row) => {
-        const { message } = row;
+      before("generate", RowManager.prototype, ([data]) => {
+        if (data.rowType !== 1) return; // Only process regular messages
+
+        const { message } = data;
         if (!message?.attachments?.length) return;
 
-        message.attachments.forEach((att) => {
-          if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
-            // Convert the txt attachment to appear as an image attachment
-            att.filename = "image.png";
-            att.content_type = "image/png";
-            att.original_content_type = "image/png";
-            
-            // Add image dimensions so Discord treats it as an image
-            att.width = 200;
-            att.height = 200;
-            
-            // Keep the original URL but Discord will try to fetch it as an image
-            // The proxy_url might also need to be set
-            if (!att.proxy_url) {
-              att.proxy_url = att.url;
-            }
-            
-            // Remove any text-specific properties
-            delete att.content_scan_version;
-            delete att.placeholder;
-            delete att.placeholder_version;
-          }
+        const obfuscatedAttachments = message.attachments.filter(
+          att => att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")
+        );
+
+        if (obfuscatedAttachments.length > 0) {
+          // Remove obfuscated attachments from the message
+          message.attachments = message.attachments.filter(
+            att => !(att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt"))
+          );
+
+          // Store the obfuscated attachments for later processing
+          data.__obfuscatedImages = obfuscatedAttachments;
+        }
+      })
+    );
+
+    // Second patch: modify the rendered content to include our images
+    patches.push(
+      after("generate", RowManager.prototype, ([data], row) => {
+        if (data.rowType !== 1 || !data.__obfuscatedImages) return;
+        
+        const { content } = row;
+        if (!Array.isArray(content)) return;
+
+        // Add our inline images after the message content
+        data.__obfuscatedImages.forEach((attachment, index) => {
+          content.push({
+            type: "component",
+            component: React.createElement(InlineImage, { 
+              key: `obfuscated-${attachment.id}-${index}`,
+              attachment: attachment 
+            })
+          });
         });
       })
     );
