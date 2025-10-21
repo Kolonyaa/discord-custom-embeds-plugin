@@ -2,7 +2,6 @@ import { applyPatches } from "./patcher";
 import applyPillPatcher from "./pillPatcher";
 import applyAttachmentPatcher from "./attachmentPatcher";
 import Settings from "./Settings";
-import applyAttachmentRenderPatcher from "./attachmentRenderPatcher";
 
 let unpatch: () => void;
 let pillUnpatch: () => void;
@@ -14,7 +13,6 @@ export function onLoad() {
   unpatch = applyPatches();
   pillUnpatch = applyPillPatcher?.();
   attachmentUnpatch = applyAttachmentPatcher?.();
-  renderUnpatch = applyAttachmentRenderPatcher?.();
 }
 
 export function onUnload() {
@@ -22,7 +20,6 @@ export function onUnload() {
   unpatch?.();
   pillUnpatch?.();
   attachmentUnpatch?.();
-  renderUnpatch?.();
 }
 
 export const settings = Settings;
