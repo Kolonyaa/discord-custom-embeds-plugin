@@ -1,5 +1,5 @@
 // attachmentPatcher.tsx
-import { after } from "@vendetta/patcher";
+import { before, after } from "@vendetta/patcher";
 import { findByName, findByProps } from "@vendetta/metro";
 import { React, ReactNative } from "@vendetta/metro/common";
 import { showToast } from "@vendetta/ui/toasts"; // might remove eventually
