@@ -34,52 +34,43 @@ function detectImageType(data: Uint8Array): string | null {
   return null;
 }
 
-// Inline image component
-const InlineImage: React.FC<{ attachment: any }> = ({ attachment }) => {
-  const [url, setUrl] = React.useState<string | null>(null);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState(false);
+// Convert Uint8Array to base64 data URL
+function bytesToDataUrl(bytes: Uint8Array, mimeType: string): string {
+  const base64 = btoa(String.fromCharCode(...bytes));
+  return `data:${mimeType};base64,${base64}`;
+}
 
-  React.useEffect(() => {
-    (async () => {
-      try {
-        setLoading(true);
-        const response = await fetch(attachment.url);
-        const obfText = await response.text();
-        const bytes = unscrambleBuffer(obfText, vstorage.secret);
+// Cache for decoded images
+const imageCache = new Map();
 
-        const mimeType = detectImageType(bytes) || "image/jpeg";
-        const blob = new Blob([bytes], { type: mimeType });
-        const blobUrl = URL.createObjectURL(blob);
-        setUrl(blobUrl);
-      } catch (e) {
-        console.error("[ObfuscationPlugin] Failed decoding inline image:", e);
-        setError(true);
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, [attachment.url]);
+// Async function to get decoded image data URL
+async function getDecodedImageData(attachmentUrl: string): Promise<{ dataUrl: string; width: number; height: number } | null> {
+  if (imageCache.has(attachmentUrl)) {
+    return imageCache.get(attachmentUrl);
+  }
 
-  if (loading) return React.createElement(ActivityIndicator, { size: "small" });
-  if (error || !url)
-    return React.createElement(
-      View,
-      { style: { marginTop: 4 } },
-      React.createElement(Text, { style: { color: "red" } }, "Failed to load image")
-    );
-
-  return React.createElement(Image, {
-    source: { uri: url },
-    style: {
-      width: 200,
-      height: 200,
-      resizeMode: "contain",
-      borderRadius: 8,
-      marginTop: 4,
-    },
-  });
-};
+  try {
+    const response = await fetch(attachmentUrl);
+    const obfText = await response.text();
+    const bytes = unscrambleBuffer(obfText, vstorage.secret);
+    
+    const mimeType = detectImageType(bytes) || "image/png";
+    const dataUrl = bytesToDataUrl(bytes, mimeType);
+    
+    // For now, use default dimensions - you could get actual dimensions from image data
+    const result = { 
+      dataUrl, 
+      width: 200, 
+      height: 200 
+    };
+    
+    imageCache.set(attachmentUrl, result);
+    return result;
+  } catch (e) {
+    console.error("[ObfuscationPlugin] Failed to decode image:", e);
+    return null;
+  }
+}
 
 export default function applyAttachmentPatcher() {
   const patches: (() => void)[] = [];
@@ -96,15 +87,16 @@ export default function applyAttachmentPatcher() {
         const normalAttachments: any[] = [];
         const fakeEmbeds: any[] = [];
 
+        // We'll process attachments and create embeds
         message.attachments.forEach((att) => {
           if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
-            // For testing, let's start with the Imgur URL to verify it works
-            const testImageUrl = "https://i.imgur.com/7dZrkGD.png";
+            // For now, use placeholder - we'll enhance this to use real data
+            const placeholderUrl = "https://i.imgur.com/7dZrkGD.png";
             
             if (Embed && EmbedMedia) {
               const imageMedia = new EmbedMedia({
-                url: testImageUrl,
-                proxyURL: testImageUrl,
+                url: placeholderUrl,
+                proxyURL: placeholderUrl,
                 width: 200,
                 height: 200,
                 srcIsAnimated: false
@@ -112,18 +104,18 @@ export default function applyAttachmentPatcher() {
 
               const embed = new Embed({
                 type: "image",
-                url: testImageUrl,
+                url: placeholderUrl,
                 image: imageMedia,
                 thumbnail: imageMedia,
-                description: "Preview of obfuscated image",
+                description: "Obfuscated image (click to decode)",
                 color: 0x2f3136,
                 bodyTextColor: 0xffffff
               });
               fakeEmbeds.push(embed);
             } else {
               const embedMediaFields = {
-                url: testImageUrl,
-                proxyURL: testImageUrl, 
+                url: placeholderUrl,
+                proxyURL: placeholderUrl, 
                 width: 200,
                 height: 200,
                 srcIsAnimated: false
@@ -131,10 +123,10 @@ export default function applyAttachmentPatcher() {
 
               fakeEmbeds.push({
                 type: "image",
-                url: testImageUrl,
+                url: placeholderUrl,
                 image: embedMediaFields,
                 thumbnail: embedMediaFields,
-                description: "Preview of obfuscated image",
+                description: "Obfuscated image (click to decode)",
                 color: 0x2f3136,
                 bodyTextColor: 0xffffff
               });
