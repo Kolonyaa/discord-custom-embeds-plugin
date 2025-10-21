@@ -1,11 +1,9 @@
 // attachmentPatcher.tsx
 import { after } from "@vendetta/patcher";
-import { findByName } from "@vendetta/metro";
+import { findByName, findByProps } from "@vendetta/metro";
 import { vstorage } from "./storage";
 import { unscrambleBuffer } from "./obfuscationUtils";
 import { React, ReactNative } from "@vendetta/metro/common";
-
-const { View, Image, ActivityIndicator, Text } = ReactNative;
 
 const ATTACHMENT_FILENAME = "obfuscated_attachment.txt";
 const INVISIBLE_MARKER = "\u200b\u200d\u200b";
@@ -41,15 +39,14 @@ function bytesToDataUrl(bytes: Uint8Array, mimeType: string): string {
 }
 
 // Cache for decoded images
-const imageCache = new Map();
+const imageCache = new Map<string, { dataUrl: string; width: number; height: number; mimeType: string }>();
 
-// Async function to get decoded image data URL
-async function getDecodedImageData(attachmentUrl: string): Promise<{ dataUrl: string; width: number; height: number } | null> {
-  if (imageCache.has(attachmentUrl)) {
-    return imageCache.get(attachmentUrl);
-  }
+// Async function to decode and cache image
+async function decodeAndCacheImage(attachmentUrl: string): Promise<void> {
+  if (imageCache.has(attachmentUrl)) return;
 
   try {
+    console.log("[ObfuscationPlugin] Decoding image:", attachmentUrl);
     const response = await fetch(attachmentUrl);
     const obfText = await response.text();
     const bytes = unscrambleBuffer(obfText, vstorage.secret);
@@ -57,19 +54,31 @@ async function getDecodedImageData(attachmentUrl: string): Promise<{ dataUrl: st
     const mimeType = detectImageType(bytes) || "image/png";
     const dataUrl = bytesToDataUrl(bytes, mimeType);
     
-    // For now, use default dimensions - you could get actual dimensions from image data
-    const result = { 
+    // For now, use default dimensions - you could extract actual dimensions later
+    const imageData = { 
       dataUrl, 
-      width: 200, 
-      height: 200 
+      width: 300, 
+      height: 300,
+      mimeType
     };
     
-    imageCache.set(attachmentUrl, result);
-    return result;
+    imageCache.set(attachmentUrl, imageData);
+    console.log("[ObfuscationPlugin] Image decoded and cached:", attachmentUrl);
   } catch (e) {
     console.error("[ObfuscationPlugin] Failed to decode image:", e);
-    return null;
+    // Cache a failure marker to avoid repeated attempts
+    imageCache.set(attachmentUrl, {
+      dataUrl: "https://i.imgur.com/7dZrkGD.png",
+      width: 200,
+      height: 200,
+      mimeType: "image/png"
+    });
   }
+}
+
+// Function to get cached image data
+function getCachedImageData(attachmentUrl: string): { dataUrl: string; width: number; height: number } | null {
+  return imageCache.get(attachmentUrl) || null;
 }
 
 export default function applyAttachmentPatcher() {
@@ -78,6 +87,76 @@ export default function applyAttachmentPatcher() {
   const Embed = findByName("Embed") || findByProps("Embed")?.Embed;
   const EmbedMedia = findByName("EmbedMedia") || findByProps("EmbedMedia")?.EmbedMedia;
 
+  // Patch message loading to pre-decode images
+  const MessageStore = findByName("MessageStore") || findByProps("getMessage", "getMessages");
+  if (MessageStore) {
+    patches.push(
+      after("getMessage", MessageStore, (args, message) => {
+        if (message?.attachments?.length) {
+          message.attachments.forEach(att => {
+            if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
+              // Start decoding in the background
+              decodeAndCacheImage(att.url);
+            }
+          });
+        }
+        return message;
+      })
+    );
+
+    patches.push(
+      after("getMessages", MessageStore, (args, messages) => {
+        if (messages) {
+          Object.values(messages).forEach((message: any) => {
+            if (message?.attachments?.length) {
+              message.attachments.forEach(att => {
+                if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
+                  // Start decoding in the background
+                  decodeAndCacheImage(att.url);
+                }
+              });
+            }
+          });
+        }
+        return messages;
+      })
+    );
+  }
+
+  // Also patch the dispatcher for new messages
+  const FluxDispatcher = findByProps("dirtyDispatch", "subscribe");
+  if (FluxDispatcher) {
+    patches.push(
+      after("dispatch", FluxDispatcher, ([event]) => {
+        if (event.type === "MESSAGE_CREATE" || event.type === "MESSAGE_UPDATE") {
+          const message = event.message;
+          if (message?.attachments?.length) {
+            message.attachments.forEach(att => {
+              if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
+                // Start decoding in the background
+                decodeAndCacheImage(att.url);
+              }
+            });
+          }
+        }
+        
+        if (event.type === "LOAD_MESSAGES_SUCCESS") {
+          event.messages?.forEach((message: any) => {
+            if (message?.attachments?.length) {
+              message.attachments.forEach(att => {
+                if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
+                  // Start decoding in the background
+                  decodeAndCacheImage(att.url);
+                }
+              });
+            }
+          });
+        }
+      })
+    );
+  }
+
+  // Main patch for rendering
   if (RowManager?.prototype?.generate) {
     patches.push(
       after("generate", RowManager.prototype, (_, row) => {
@@ -87,46 +166,25 @@ export default function applyAttachmentPatcher() {
         const normalAttachments: any[] = [];
         const fakeEmbeds: any[] = [];
 
-        // Process each attachment
         message.attachments.forEach((att) => {
           if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
-            // Use the actual decoded image data
-            const decodedImageData = getDecodedImageData(att.url).then(imageData => {
-              if (!imageData) {
-                // Fallback to placeholder if decoding fails
-                return {
-                  url: "https://i.imgur.com/7dZrkGD.png",
-                  width: 200,
-                  height: 200
-                };
-              }
-              
-              return {
-                url: imageData.dataUrl,
-                width: imageData.width,
-                height: imageData.height
-              };
-            }).catch(() => {
-              // Fallback on error
-              return {
-                url: "https://i.imgur.com/7dZrkGD.png",
-                width: 200,
-                height: 200
-              };
-            });
-
-            // For now, we'll use a placeholder and handle async decoding differently
-            // We need to handle this asynchronously, so let's use a simple approach first
-            const imageInfo = {
-              url: "https://i.imgur.com/7dZrkGD.png", // Temporary placeholder
+            // Get cached image data or use placeholder
+            const cachedImage = getCachedImageData(att.url);
+            
+            const imageInfo = cachedImage || {
+              dataUrl: "https://i.imgur.com/7dZrkGD.png",
               width: 200,
               height: 200
             };
+
+            const description = cachedImage 
+              ? "Decoded obfuscated image" 
+              : "Decoding obfuscated image...";
             
             if (Embed && EmbedMedia) {
               const imageMedia = new EmbedMedia({
-                url: imageInfo.url,
-                proxyURL: imageInfo.url,
+                url: imageInfo.dataUrl,
+                proxyURL: imageInfo.dataUrl,
                 width: imageInfo.width,
                 height: imageInfo.height,
                 srcIsAnimated: false
@@ -134,18 +192,18 @@ export default function applyAttachmentPatcher() {
 
               const embed = new Embed({
                 type: "image",
-                url: imageInfo.url,
+                url: imageInfo.dataUrl,
                 image: imageMedia,
                 thumbnail: imageMedia,
-                description: "Decoded obfuscated image",
+                description: description,
                 color: 0x2f3136,
                 bodyTextColor: 0xffffff
               });
               fakeEmbeds.push(embed);
             } else {
               const embedMediaFields = {
-                url: imageInfo.url,
-                proxyURL: imageInfo.url, 
+                url: imageInfo.dataUrl,
+                proxyURL: imageInfo.dataUrl, 
                 width: imageInfo.width,
                 height: imageInfo.height,
                 srcIsAnimated: false
@@ -153,10 +211,10 @@ export default function applyAttachmentPatcher() {
 
               fakeEmbeds.push({
                 type: "image",
-                url: imageInfo.url,
+                url: imageInfo.dataUrl,
                 image: embedMediaFields,
                 thumbnail: embedMediaFields,
-                description: "Decoded obfuscated image",
+                description: description,
                 color: 0x2f3136,
                 bodyTextColor: 0xffffff
               });
@@ -175,5 +233,8 @@ export default function applyAttachmentPatcher() {
     );
   }
 
-  return () => patches.forEach((unpatch) => unpatch());
+  return () => {
+    patches.forEach((unpatch) => unpatch());
+    imageCache.clear(); // Clear cache on unload
+  };
 }
