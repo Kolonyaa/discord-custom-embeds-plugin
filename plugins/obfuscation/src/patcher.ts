@@ -28,8 +28,6 @@ function hasObfuscationMarker(content: string): boolean {
 export function applyPatches() {
   const patches = [];
 
-  console.log("[ObfuscationPlugin] Applying invisible-marker patches...");
-
   // PATCH 1: Outgoing messages
   patches.push(
     before("sendMessage", Messages, (args) => {
@@ -125,8 +123,6 @@ export function applyPatches() {
         }
       })
     );
-  } else {
-    console.warn("[ObfuscationPlugin] Skipping emoji rendering patch - getCustomEmojiById not available");
   }
 
   // PATCH 4: Reprocess already existing messages
