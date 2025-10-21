@@ -11,8 +11,9 @@ const MessageRecord = findByName("MessageRecord", false);
 const RowManager = findByName("RowManager");
 
 const ATTACHMENT_FILENAME = "obfuscated_attachment.txt";
+const PLACEHOLDER_IMAGE = "https://i.imgur.com/7dZrkGD.png";
 
-// Instead of creating fake embeds, modify the attachment record directly
+// Modify the message record to replace txt attachments with our image
 patches.push(after("createMessageRecord", MessageRecordUtils, function ([message], record) {
   if (!message.attachments?.length) return;
   
@@ -20,12 +21,14 @@ patches.push(after("createMessageRecord", MessageRecordUtils, function ([message
   
   for (const att of message.attachments) {
     if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
-      // Convert the txt attachment to appear as an image attachment
+      // Replace the txt attachment with our image URL
       modifiedAttachments.push({
         ...att,
         filename: "image.png",
         content_type: "image/png",
-        // Keep the original URL but change how it's displayed
+        url: PLACEHOLDER_IMAGE,
+        proxy_url: PLACEHOLDER_IMAGE,
+        // Keep track that this was originally an obfuscated attachment
         __vml_is_obfuscated_image: true,
         __vml_original_url: att.url
       });
@@ -47,9 +50,10 @@ patches.push(after("default", MessageRecord, ([props], record) => {
       if (att.__vml_is_obfuscated_image) {
         modifiedAttachments.push({
           ...att,
-          // Ensure it displays as an image
+          url: PLACEHOLDER_IMAGE,
+          proxy_url: PLACEHOLDER_IMAGE,
           content_type: "image/png",
-          __vml_is_obfuscated_image: true
+          filename: "image.png"
         });
       } else {
         modifiedAttachments.push(att);
@@ -62,34 +66,34 @@ patches.push(after("default", MessageRecord, ([props], record) => {
   }
 }));
 
-// Patch the RowManager to handle the display of obfuscated images
+// Patch RowManager to ensure proper display
 patches.push(after("generate", RowManager.prototype, ([data], row) => {
   if (!data.message?.attachments?.length) return;
   
   const { message } = data;
   
-  // Look for obfuscated attachments and modify their display
-  message.attachments.forEach((att, index) => {
-    if (att.__vml_is_obfuscated_image) {
-      // Here you can modify how the attachment is displayed
-      // You might need to patch the attachment component directly
-      console.log("Found obfuscated image attachment:", att);
+  // Ensure any obfuscated attachments use our placeholder image
+  message.attachments.forEach((att) => {
+    if (att.__vml_is_obfuscated_image && att.url !== PLACEHOLDER_IMAGE) {
+      att.url = PLACEHOLDER_IMAGE;
+      att.proxy_url = PLACEHOLDER_IMAGE;
     }
   });
 }));
 
-// Alternative approach: Patch the attachment component directly
+// Patch the attachment component to force image display
 const Attachment = findByName("Attachment") || findByProps("Attachment")?.Attachment;
 if (Attachment) {
   patches.push(after("default", Attachment, ([props], component) => {
     if (props.attachment?.__vml_is_obfuscated_image) {
-      // Modify the attachment props to display as image
       return {
         ...component,
         props: {
           ...props,
           attachment: {
             ...props.attachment,
+            url: PLACEHOLDER_IMAGE,
+            proxy_url: PLACEHOLDER_IMAGE,
             content_type: "image/png",
             filename: "image.png"
           }
@@ -99,6 +103,18 @@ if (Attachment) {
     return component;
   }));
 }
+
+// Also patch any message update events to maintain our image URL
+patches.push(before("dispatch", FluxDispatcher, ([event]) => {
+  if (event.type === "MESSAGE_UPDATE" && event.message?.attachments) {
+    event.message.attachments.forEach(att => {
+      if (att.__vml_is_obfuscated_image && att.url !== PLACEHOLDER_IMAGE) {
+        att.url = PLACEHOLDER_IMAGE;
+        att.proxy_url = PLACEHOLDER_IMAGE;
+      }
+    });
+  }
+}));
 
 export default function applyAttachmentPatcher() {
   return () => patches.forEach((unpatch) => unpatch());
