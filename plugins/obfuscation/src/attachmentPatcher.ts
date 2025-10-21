@@ -95,26 +95,37 @@ export default function applyAttachmentPatcher() {
 
         message.attachments.forEach((att) => {
           if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
-            // Create a proper image embed with all required fields
+            // Create a complete embed structure with all required fields
             fakeEmbeds.push({
               type: "image",
               url: "https://i.imgur.com/7dZrkGD.png",
+              title: null,
+              description: "Preview of obfuscated image",
+              color: 0x2f3136,
+              timestamp: null,
+              fields: [],
+              author: null,
+              footer: null,
+              provider: null,
+              video: null,
               image: {
                 url: "https://i.imgur.com/7dZrkGD.png",
                 proxy_url: "https://i.imgur.com/7dZrkGD.png",
                 width: 200,
                 height: 200,
-                srcIsAnimated: false // Add this required field
+                srcIsAnimated: false
               },
               thumbnail: {
                 url: "https://i.imgur.com/7dZrkGD.png",
                 proxy_url: "https://i.imgur.com/7dZrkGD.png", 
                 width: 200,
                 height: 200,
-                srcIsAnimated: false // Add this required field
+                srcIsAnimated: false
               },
-              description: "Preview of obfuscated image",
-              color: 0x2f3136,
+              // Add the required body.TextColor field
+              body: {
+                TextColor: 0xffffff // or whatever color Discord expects
+              }
             });
           } else {
             normalAttachments.push(att);
