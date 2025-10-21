@@ -95,23 +95,26 @@ export default function applyAttachmentPatcher() {
 
         message.attachments.forEach((att) => {
           if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
-            // Create a proper image embed
+            // Create a proper image embed with all required fields
             fakeEmbeds.push({
               type: "image",
+              url: "https://i.imgur.com/7dZrkGD.png",
               image: {
-                url: "https://i.imgur.com/7dZrkGD.png", // placeholder image
+                url: "https://i.imgur.com/7dZrkGD.png",
                 proxy_url: "https://i.imgur.com/7dZrkGD.png",
                 width: 200,
                 height: 200,
+                srcIsAnimated: false // Add this required field
               },
               thumbnail: {
                 url: "https://i.imgur.com/7dZrkGD.png",
                 proxy_url: "https://i.imgur.com/7dZrkGD.png", 
                 width: 200,
                 height: 200,
+                srcIsAnimated: false // Add this required field
               },
               description: "Preview of obfuscated image",
-              color: 0x2f3136, // Optional: set embed color
+              color: 0x2f3136,
             });
           } else {
             normalAttachments.push(att);
