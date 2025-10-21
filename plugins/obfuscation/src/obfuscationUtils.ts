@@ -108,3 +108,34 @@ export function unscramble(brailleStr: string, secret: string): string {
   const decoder = new TextDecoder();
   return decoder.decode(plain);
 }
+
+export function scrambleBuffer(data: Uint8Array, secret: string): string {
+  const iv = randomUint32();
+  const ks = getKeystream(secret, iv, data.length);
+  
+  const cipher = new Uint8Array(data.length);
+  for (let i = 0; i < data.length; i++) cipher[i] = data[i] ^ ks[i];
+
+  const combined = new Uint8Array(4 + cipher.length);
+  combined[0] = (iv >>> 24) & 0xff;
+  combined[1] = (iv >>> 16) & 0xff;
+  combined[2] = (iv >>> 8) & 0xff;
+  combined[3] = iv & 0xff;
+  combined.set(cipher, 4);
+
+  return bytesToBraille(combined);
+}
+
+export function unscrambleBuffer(brailleStr: string, secret: string): Uint8Array {
+  const combined = brailleToBytes(brailleStr);
+  if (combined.length < 4) throw new Error("Invalid data");
+
+  const iv = ((combined[0] << 24) >>> 0) | (combined[1] << 16) | (combined[2] << 8) | combined[3];
+  const cipher = combined.slice(4);
+
+  const ks = getKeystream(secret, iv, cipher.length);
+  const plain = new Uint8Array(cipher.length);
+  for (let i = 0; i < cipher.length; i++) plain[i] = cipher[i] ^ ks[i];
+
+  return plain;
+}
