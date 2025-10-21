@@ -152,7 +152,7 @@ function mimeToExt(mime: string): string {
                 const ext = mimeToExt(mime);
 
                 // build blob and blob url
-                const blob = new Blob([decodedBytes], { type: mime });
+                const blob = new Blob([new Uint8Array(decodedBytes)], { type: mime });
                 const blobUrl = URL.createObjectURL(blob);
 
                 // replace attachment metadata so UI treats as image
