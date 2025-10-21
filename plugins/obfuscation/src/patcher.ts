@@ -1,164 +1,164 @@
-import { findByProps, findByStoreName, findByName } from "@vendetta/metro";
-import { before, after } from "@vendetta/patcher";
-import { FluxDispatcher } from "@vendetta/metro/common";
+// attachmentPatcher.tsx
+import { after } from "@vendetta/patcher";
+import { findByName, findByProps } from "@vendetta/metro";
 import { vstorage } from "./storage";
-import { scramble, unscramble } from "./obfuscationUtils";
+import { unscrambleBuffer } from "./obfuscationUtils";
+import { React, ReactNative } from "@vendetta/metro/common";
 
-const Messages = findByProps("sendMessage", "editMessage", "receiveMessage");
-const MessageStore = findByStoreName("MessageStore");
+const { View, Image, ActivityIndicator, Text } = ReactNative;
+
+const ATTACHMENT_FILENAME = "obfuscated_attachment.txt";
 const RowManager = findByName("RowManager");
+const FluxDispatcher = findByProps("dirtyDispatch", "subscribe");
 
-// Safely get EmojiStore (optional)
-let getCustomEmojiById: any = null;
-try {
-  const EmojiStore = findByStoreName("EmojiStore");
-  getCustomEmojiById = EmojiStore?.getCustomEmojiById;
-} catch {
-  console.warn("[ObfuscationPlugin] EmojiStore not available, emoji rendering disabled");
+// Cache for decoded images
+const imageCache = new Map<string, { dataUrl: string; width: number; height: number }>();
+
+// Track which messages we're currently processing
+const processingMessages = new Set<string>();
+
+async function decodeAndCacheImage(attachmentUrl: string, messageId: string): Promise<void> {
+  if (imageCache.has(attachmentUrl)) return;
+
+  try {
+    console.log("[ObfuscationPlugin] Decoding image:", attachmentUrl);
+    
+    const response = await fetch(attachmentUrl);
+    const obfText = await response.text();
+    const bytes = unscrambleBuffer(obfText, vstorage.secret);
+    
+    // Detect image type
+    let mimeType = "image/png";
+    if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) mimeType = "image/jpeg";
+    else if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) mimeType = "image/png";
+    else if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) mimeType = "image/gif";
+    
+    // Convert to data URL
+    const base64 = btoa(String.fromCharCode(...bytes));
+    const dataUrl = `data:${mimeType};base64,${base64}`;
+    
+    imageCache.set(attachmentUrl, { 
+      dataUrl, 
+      width: 300, 
+      height: 300 
+    });
+    
+    console.log("[ObfuscationPlugin] Image decoded successfully");
+    
+    // Force a re-render of the message now that we have the real image
+    processingMessages.delete(messageId);
+    FluxDispatcher.dispatch({
+      type: "MESSAGE_UPDATE",
+      message: { id: messageId }
+    });
+    
+  } catch (e) {
+    console.error("[ObfuscationPlugin] Failed to decode image:", e);
+    processingMessages.delete(messageId);
+  }
 }
 
-// Invisible marker sequence (not shown on non-plugin clients)
-const INVISIBLE_MARKER = "\u200b\u200d\u200b"; // zero-width space + joiner + space
+export default function applyAttachmentPatcher() {
+  const patches: (() => void)[] = [];
 
-// Helper functions
-function hasObfuscationMarker(content: string): boolean {
-  return content?.includes(INVISIBLE_MARKER);
-}
+  const Embed = findByName("Embed") || findByProps("Embed")?.Embed;
+  const EmbedMedia = findByName("EmbedMedia") || findByProps("EmbedMedia")?.EmbedMedia;
 
-export function applyPatches() {
-  const patches = [];
-
-  // PATCH 1: Outgoing messages
+  // Patch message creation to start async decoding
   patches.push(
-    before("sendMessage", Messages, (args) => {
-      try {
-        const msg = args[1];
-        const content = msg?.content;
-
-        if (!vstorage.enabled) return;
-        if (!content || !vstorage.secret) return;
-        if (hasObfuscationMarker(content)) return;
-
-        console.log("[ObfuscationPlugin] Sending message:", content);
-
-        const scrambled = scramble(content, vstorage.secret);
-        console.log("[ObfuscationPlugin] Scrambled to:", scrambled);
-
-        // Non-plugin clients will not see the INVISIBLE_MARKER at all.
-        // Plugin users detect it and render the emoji indicator locally.
-        msg.content = `${INVISIBLE_MARKER}${scrambled}`;
-      } catch (e) {
-        console.error("[ObfuscationPlugin] Error in sendMessage patch:", e);
-      }
-    })
-  );
-
-  // PATCH 2: Incoming message decoding (for plugin users)
-  patches.push(
-    before("generate", RowManager.prototype, ([data]) => {
-      try {
-        if (data.rowType !== 1) return;
-        const message = data.message;
-        if (!message?.content) return;
-
-        const content = message.content;
-        if (!hasObfuscationMarker(content)) return;
-
-        const encryptedBody = content.replace(INVISIBLE_MARKER, "").trim();
-        if (!vstorage.secret || !encryptedBody) return;
-
-        const decoded = unscramble(encryptedBody, vstorage.secret);
-        console.log("[ObfuscationPlugin] Decoded:", decoded);
-
-        // Insert the emoji locally before the message for plugin users
-        const INDICATOR_EMOJI_URL = "https://cdn.discordapp.com/emojis/1429170621891477615.webp?size=48&quality=lossless";
-        const wrappedEmojiUrl = `<${INDICATOR_EMOJI_URL}>`;
-
-        data.message.content = `${wrappedEmojiUrl}${decoded}`;
-      } catch (e) {
-        console.error("[ObfuscationPlugin] Error decoding message:", e);
-      }
-    })
-  );
-
-  // PATCH 3: Emoji rendering (for plugin users)
-  if (getCustomEmojiById) {
-    patches.push(
-      after("generate", RowManager.prototype, ([data], row) => {
-        try {
-          if (data.rowType !== 1) return;
-          const message = row?.message;
-          if (!message || !message.content) return;
-
-          if (Array.isArray(message.content)) {
-            for (let i = 0; i < message.content.length; i++) {
-              const el = message.content[i];
-              if (el && el.type === "link" && el.target) {
-                const match = el.target.match(/https:\/\/cdn\.discordapp\.com\/emojis\/(\d+)\.\w+/);
-                if (!match) continue;
-
-                const url = `${match[0]}?size=128`;
-
-                let emojiName = "<indicator>";
-                try {
-                  const emoji = getCustomEmojiById(match[1]);
-                  if (emoji && emoji.name) emojiName = emoji.name;
-                } catch (e) {
-                  console.warn("[ObfuscationPlugin] Failed to get emoji info:", e);
-                }
-
-                message.content[i] = {
-                  type: "customEmoji",
-                  id: match[1],
-                  alt: emojiName,
-                  src: url,
-                  frozenSrc: url.replace("gif", "webp"),
-                  jumboable: false,
-                };
+    after("dispatch", FluxDispatcher, ([event]) => {
+      if (event.type === "MESSAGE_CREATE" || event.type === "MESSAGE_UPDATE") {
+        const message = event.message;
+        if (message?.attachments?.length && message.id) {
+          message.attachments.forEach(att => {
+            if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
+              if (!imageCache.has(att.url) && !processingMessages.has(message.id)) {
+                processingMessages.add(message.id);
+                // Start async decoding
+                decodeAndCacheImage(att.url, message.id);
               }
             }
+          });
+        }
+      }
+    })
+  );
+
+  // Main sync patch for rendering
+  if (RowManager?.prototype?.generate) {
+    patches.push(
+      after("generate", RowManager.prototype, (_, row) => {
+        const { message } = row;
+        if (!message?.attachments?.length || !message.id) return;
+
+        const normalAttachments: any[] = [];
+        const fakeEmbeds: any[] = [];
+
+        message.attachments.forEach((att) => {
+          if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
+            // Check if we have the real image decoded
+            const cachedImage = imageCache.get(att.url);
+            
+            const imageUrl = cachedImage?.dataUrl || "https://i.imgur.com/7dZrkGD.png";
+            const description = cachedImage ? "Decoded image" : "Decoding...";
+            const width = cachedImage?.width || 200;
+            const height = cachedImage?.height || 200;
+            
+            if (Embed && EmbedMedia) {
+              const imageMedia = new EmbedMedia({
+                url: imageUrl,
+                proxyURL: imageUrl,
+                width,
+                height,
+                srcIsAnimated: false
+              });
+
+              const embed = new Embed({
+                type: "image",
+                url: imageUrl,
+                image: imageMedia,
+                thumbnail: imageMedia,
+                description,
+                color: 0x2f3136,
+                bodyTextColor: 0xffffff
+              });
+              fakeEmbeds.push(embed);
+            } else {
+              const embedMediaFields = {
+                url: imageUrl,
+                proxyURL: imageUrl, 
+                width,
+                height,
+                srcIsAnimated: false
+              };
+
+              fakeEmbeds.push({
+                type: "image",
+                url: imageUrl,
+                image: embedMediaFields,
+                thumbnail: embedMediaFields,
+                description,
+                color: 0x2f3136,
+                bodyTextColor: 0xffffff
+              });
+            }
+          } else {
+            normalAttachments.push(att);
           }
-        } catch (e) {
-          console.error("[ObfuscationPlugin] Emoji rendering error:", e);
+        });
+
+        if (fakeEmbeds.length) {
+          if (!message.embeds) message.embeds = [];
+          message.embeds.push(...fakeEmbeds);
+          message.attachments = normalAttachments;
         }
       })
     );
   }
 
-  // PATCH 4: Reprocess already existing messages
-  const reprocessExistingMessages = () => {
-    try {
-      console.log("[ObfuscationPlugin] Reprocessing messages...");
-
-      setTimeout(() => {
-        try {
-          const channels = MessageStore.getMutableMessages?.() ?? {};
-
-          Object.entries(channels).forEach(([channelId, messages]: [string, any]) => {
-            if (!messages) return;
-
-            Object.values(messages).forEach((msg: any) => {
-              if (msg && hasObfuscationMarker(msg.content)) {
-                FluxDispatcher.dispatch({
-                  type: "MESSAGE_UPDATE",
-                  message: { ...msg },
-                });
-              }
-            });
-          });
-        } catch (e) {
-          console.error("[ObfuscationPlugin] Error reprocessing messages:", e);
-        }
-      }, 1000);
-    } catch (e) {
-      console.error("[ObfuscationPlugin] Reprocess failed:", e);
-    }
-  };
-
-  setTimeout(reprocessExistingMessages, 1000);
-
   return () => {
-    console.log("[ObfuscationPlugin] Removing patches...");
-    patches.forEach(unpatch => unpatch());
+    patches.forEach((unpatch) => unpatch());
+    imageCache.clear();
+    processingMessages.clear();
   };
 }
