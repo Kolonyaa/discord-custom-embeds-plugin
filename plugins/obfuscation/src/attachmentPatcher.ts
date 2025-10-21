@@ -134,7 +134,7 @@ export default function applyAttachmentPatcher() {
                 placeholderVersion: 0,
                 contentScanVersion: 0,
                 flags: 0
-              };
+              }; 
 
               fakeEmbeds.push({
                 type: "image",
