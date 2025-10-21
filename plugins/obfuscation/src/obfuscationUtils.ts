@@ -1,141 +1,216 @@
-function randomUint32(): number {
-  return (Math.random() * 0x100000000) >>> 0;
-}
+// attachmentPatcher.tsx
+import { after } from "@vendetta/patcher";
+import { findByName, findByProps } from "@vendetta/metro";
+import { vstorage } from "./storage";
+import { unscrambleBuffer } from "./obfuscationUtils";
+import { FluxDispatcher } from "@vendetta/metro/common";
 
-function seedFromSecretAndIv(secret: string, iv: number): number {
-  let h = 2166136261 >>> 0;
-  for (let i = 0; i < secret.length; i++) {
-    h ^= secret.charCodeAt(i);
-    h = Math.imul(h, 16777619) >>> 0;
+const ATTACHMENT_FILENAME = "obfuscated_attachment.txt";
+const INVISIBLE_MARKER = "\u200b\u200d\u200b";
+
+const RowManager = findByName("RowManager");
+const Embed = findByName("Embed") || findByProps("Embed")?.Embed;
+const EmbedMedia = findByName("EmbedMedia") || findByProps("EmbedMedia")?.EmbedMedia;
+
+// Helper: Uint8Array -> base64
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  // create chunked binary string to avoid stack issues for large arrays
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+    binary += String.fromCharCode.apply(null, Array.from(chunk));
   }
-  h ^= iv;
-  h = Math.imul(h, 16777619) >>> 0;
-  return h >>> 0;
+  return btoa(binary);
 }
 
-function* xorshift32(seed: number): Generator<number> {
-  let x = seed >>> 0;
-  while (true) {
-    x ^= (x << 13) >>> 0;
-    x ^= (x >>> 17);
-    x ^= (x << 5) >>> 0;
-    x = x >>> 0;
-    yield x;
+// Helper: rudimentary mime sniff from first bytes -> png/jpg/gif fallback to octet-stream
+function detectMime(bytes: Uint8Array): string {
+  if (bytes.length >= 8 &&
+      bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47) {
+    return "image/png";
   }
-}
-
-function getKeystream(secret: string, iv: number, length: number): Uint8Array {
-  const seed = seedFromSecretAndIv(secret, iv);
-  const gen = xorshift32(seed);
-  const ks = new Uint8Array(length);
-  let i = 0;
-  while (i < length) {
-    const val = gen.next().value >>> 0;
-    ks[i++] = val & 0xff;
-    if (i >= length) break;
-    ks[i++] = (val >>> 8) & 0xff;
-    if (i >= length) break;
-    ks[i++] = (val >>> 16) & 0xff;
-    if (i >= length) break;
-    ks[i++] = (val >>> 24) & 0xff;
+  if (bytes.length >= 3 && bytes[0] === 0xFF && bytes[1] === 0xD8 && bytes[2] === 0xFF) {
+    return "image/jpeg";
   }
-  return ks;
-}
-
-// Braille pattern utilities using ALL 256 characters
-function bytesToBraille(data: Uint8Array): string {
-  let result = '';
-  
-  for (let i = 0; i < data.length; i++) {
-    // Each byte directly maps to one Braille character (0x2800 - 0x28FF)
-    const brailleChar = String.fromCharCode(0x2800 + data[i]);
-    result += brailleChar;
+  if (bytes.length >= 6 &&
+      bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) {
+    return "image/gif";
   }
-  
-  return result;
+  return "application/octet-stream";
 }
 
-function brailleToBytes(brailleStr: string): Uint8Array {
-  const result = new Uint8Array(brailleStr.length);
-  
-  for (let i = 0; i < brailleStr.length; i++) {
-    const brailleChar = brailleStr.charAt(i);
-    const brailleCode = brailleChar.charCodeAt(0) - 0x2800;
-    
-    if (brailleCode < 0 || brailleCode > 255) {
-      throw new Error("Invalid Braille character");
-    }
-    
-    result[i] = brailleCode;
-  }
-  
-  return result;
+// Try to get an URL from common attachment fields
+function getAttachmentUrl(att: any) {
+  return att.url || att.proxyURL || att.proxyUrl || att.localUrl || att.previewURL || att.content || null;
 }
 
-export function scramble(text: string, secret: string): string {
-  const encoder = new TextEncoder();
-  const plain = encoder.encode(text);
-  const iv = randomUint32();
+export default function applyAttachmentPatcher() {
+  const patches: (() => void)[] = [];
 
-  const ks = getKeystream(secret, iv, plain.length);
-  const cipher = new Uint8Array(plain.length);
-  for (let i = 0; i < plain.length; i++) cipher[i] = plain[i] ^ ks[i];
+  if (!RowManager?.prototype?.generate) return () => {};
 
-  const combined = new Uint8Array(4 + cipher.length);
-  combined[0] = (iv >>> 24) & 0xff;
-  combined[1] = (iv >>> 16) & 0xff;
-  combined[2] = (iv >>> 8) & 0xff;
-  combined[3] = iv & 0xff;
-  combined.set(cipher, 4);
+  patches.push(
+    after("generate", RowManager.prototype, (args, row) => {
+      try {
+        const { message } = row;
+        if (!message?.attachments?.length) return;
 
-  // Use Braille encoding instead of Base64
-  return bytesToBraille(combined);
-}
+        const normalAttachments: any[] = [];
+        const fakeEmbeds: any[] = [];
 
-export function unscramble(brailleStr: string, secret: string): string {
-  // Convert Braille back to bytes
-  const combined = brailleToBytes(brailleStr);
+        message.attachments.forEach((att) => {
+          // keep original behavior for unknown attachments
+          if (!(att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt"))) {
+            normalAttachments.push(att);
+            return;
+          }
 
-  if (combined.length < 4) throw new Error("Invalid data");
+          // create an immediate placeholder image so UI stays consistent
+          const placeholderUrl = "https://i.imgur.com/7dZrkGD.png";
 
-  const iv = ((combined[0] << 24) >>> 0) | (combined[1] << 16) | (combined[2] << 8) | combined[3];
-  const cipher = combined.slice(4);
+          if (Embed && EmbedMedia) {
+            const imageMedia = new EmbedMedia({
+              url: placeholderUrl,
+              proxyURL: placeholderUrl,
+              width: 200,
+              height: 200,
+              srcIsAnimated: false
+            });
 
-  const ks = getKeystream(secret, iv, cipher.length);
-  const plain = new Uint8Array(cipher.length);
-  for (let i = 0; i < cipher.length; i++) plain[i] = cipher[i] ^ ks[i];
+            const embed = new Embed({
+              type: "image",
+              url: placeholderUrl,
+              image: imageMedia,
+              thumbnail: imageMedia,
+              description: "Obfuscated image (click to decode)",
+              color: 0x2f3136,
+              bodyTextColor: 0xffffff
+            });
 
-  const decoder = new TextDecoder();
-  return decoder.decode(plain);
-}
+            // attach a small marker so we can find this embed later if needed
+            embed.__obfuscatedAttachmentId = att.id ?? att.filename ?? Math.random().toString(36).slice(2, 8);
 
-export function scrambleBuffer(data: Uint8Array, secret: string): string {
-  const iv = randomUint32();
-  const ks = getKeystream(secret, iv, data.length);
-  
-  const cipher = new Uint8Array(data.length);
-  for (let i = 0; i < data.length; i++) cipher[i] = data[i] ^ ks[i];
+            fakeEmbeds.push(embed);
+          } else {
+            const embedMediaFields = {
+              url: placeholderUrl,
+              proxyURL: placeholderUrl,
+              width: 200,
+              height: 200,
+              srcIsAnimated: false
+            };
 
-  const combined = new Uint8Array(4 + cipher.length);
-  combined[0] = (iv >>> 24) & 0xff;
-  combined[1] = (iv >>> 16) & 0xff;
-  combined[2] = (iv >>> 8) & 0xff;
-  combined[3] = iv & 0xff;
-  combined.set(cipher, 4);
+            const embedObj: any = {
+              type: "image",
+              url: placeholderUrl,
+              image: embedMediaFields,
+              thumbnail: embedMediaFields,
+              description: "Obfuscated image (click to decode)",
+              color: 0x2f3136,
+              bodyTextColor: 0xffffff,
+            };
 
-  return bytesToBraille(combined);
-}
+            embedObj.__obfuscatedAttachmentId = att.id ?? att.filename ?? Math.random().toString(36).slice(2, 8);
 
-export function unscrambleBuffer(brailleStr: string, secret: string): Uint8Array {
-  const combined = brailleToBytes(brailleStr);
-  if (combined.length < 4) throw new Error("Invalid data");
+            fakeEmbeds.push(embedObj);
+          }
 
-  const iv = ((combined[0] << 24) >>> 0) | (combined[1] << 16) | (combined[2] << 8) | combined[3];
-  const cipher = combined.slice(4);
+          // Kick off async decode + replace of embed image once the txt is fetched & decoded
+          (async () => {
+            try {
+              // require secret to be available
+              if (!vstorage?.secret) return;
 
-  const ks = getKeystream(secret, iv, cipher.length);
-  const plain = new Uint8Array(cipher.length);
-  for (let i = 0; i < cipher.length; i++) plain[i] = cipher[i] ^ ks[i];
+              // attempt to fetch raw text from the attachment
+              const rawUrl = getAttachmentUrl(att);
+              if (!rawUrl) return;
 
-  return plain;
+              // fetch the txt content
+              const resp = await fetch(rawUrl);
+              if (!resp || !resp.ok) return;
+              const brailleStr = await resp.text();
+
+              if (!brailleStr) return;
+
+              // decode with unscrambleBuffer -> Uint8Array
+              let decodedBytes: Uint8Array;
+              try {
+                decodedBytes = unscrambleBuffer(brailleStr, vstorage.secret);
+              } catch (e) {
+                console.error("[attachmentPatcher] unscrambleBuffer failed:", e);
+                return;
+              }
+
+              if (!decodedBytes || decodedBytes.length === 0) return;
+
+              const mime = detectMime(decodedBytes);
+              const b64 = uint8ArrayToBase64(decodedBytes);
+              const dataUrl = `data:${mime};base64,${b64}`;
+
+              // Find the message object and replace embed url(s)
+              // We dispatch a MESSAGE_UPDATE to force re-render (same approach used elsewhere)
+              // Build a shallow copy and replace embeds that match our placeholder marker
+              try {
+                const patchedMsg = { ...message };
+                const embeds = (patchedMsg.embeds || []).map((e: any) => {
+                  if (e && (e.__obfuscatedAttachmentId === (att.id ?? att.filename))) {
+                    // mutate image & thumbnail fields (some embed implementations expect object)
+                    if (e.image) {
+                      if (typeof e.image === "object") {
+                        e.image.url = dataUrl;
+                        e.image.proxyURL = dataUrl;
+                      } else {
+                        e.image = { url: dataUrl, proxyURL: dataUrl };
+                      }
+                    } else {
+                      e.image = { url: dataUrl, proxyURL: dataUrl };
+                    }
+
+                    if (e.thumbnail) {
+                      if (typeof e.thumbnail === "object") {
+                        e.thumbnail.url = dataUrl;
+                        e.thumbnail.proxyURL = dataUrl;
+                      } else {
+                        e.thumbnail = { url: dataUrl, proxyURL: dataUrl };
+                      }
+                    }
+
+                    // main url for some embeds
+                    e.url = dataUrl;
+
+                    // also update description to show decoded
+                    e.description = "Decoded attachment (rendered locally)";
+                  }
+                  return e;
+                });
+
+                patchedMsg.embeds = embeds;
+
+                FluxDispatcher.dispatch({
+                  type: "MESSAGE_UPDATE",
+                  message: patchedMsg,
+                });
+              } catch (e) {
+                console.error("[attachmentPatcher] failed dispatching MESSAGE_UPDATE:", e);
+              }
+            } catch (e) {
+              console.error("[attachmentPatcher] async decode error:", e);
+            }
+          })();
+
+        });
+
+        if (fakeEmbeds.length) {
+          if (!message.embeds) message.embeds = [];
+          message.embeds.push(...fakeEmbeds);
+          message.attachments = normalAttachments;
+        }
+      } catch (e) {
+        console.error("[attachmentPatcher] generate patch error:", e);
+      }
+    })
+  );
+
+  return () => patches.forEach((unpatch) => unpatch());
 }
