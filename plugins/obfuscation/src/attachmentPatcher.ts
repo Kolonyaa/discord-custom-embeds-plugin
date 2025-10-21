@@ -90,54 +90,29 @@ export default function applyAttachmentPatcher() {
         const { message } = row;
         if (!message?.attachments?.length) return;
 
-        const normalAttachments: any[] = [];
-        const fakeEmbeds: any[] = [];
-
         message.attachments.forEach((att) => {
           if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
-            // Create a complete embed structure with all required fields
-            fakeEmbeds.push({
-              type: "image",
-              url: "https://i.imgur.com/7dZrkGD.png",
-              title: null,
-              description: "Preview of obfuscated image",
-              color: 0x2f3136,
-              timestamp: null,
-              fields: [],
-              author: null,
-              footer: null,
-              provider: null,
-              video: null,
-              image: {
-                url: "https://i.imgur.com/7dZrkGD.png",
-                proxy_url: "https://i.imgur.com/7dZrkGD.png",
-                width: 200,
-                height: 200,
-                srcIsAnimated: false
-              },
-              thumbnail: {
-                url: "https://i.imgur.com/7dZrkGD.png",
-                proxy_url: "https://i.imgur.com/7dZrkGD.png", 
-                width: 200,
-                height: 200,
-                srcIsAnimated: false
-              },
-              // Add the required body.TextColor field
-              body: {
-                TextColor: 0xffffff // or whatever color Discord expects
-              }
-            });
-          } else {
-            normalAttachments.push(att);
+            // Convert the txt attachment to appear as an image attachment
+            att.filename = "image.png";
+            att.content_type = "image/png";
+            att.original_content_type = "image/png";
+            
+            // Add image dimensions so Discord treats it as an image
+            att.width = 200;
+            att.height = 200;
+            
+            // Keep the original URL but Discord will try to fetch it as an image
+            // The proxy_url might also need to be set
+            if (!att.proxy_url) {
+              att.proxy_url = att.url;
+            }
+            
+            // Remove any text-specific properties
+            delete att.content_scan_version;
+            delete att.placeholder;
+            delete att.placeholder_version;
           }
         });
-
-        // Inject embeds and remove original txt attachments
-        if (fakeEmbeds.length) {
-          if (!message.embeds) message.embeds = [];
-          message.embeds.push(...fakeEmbeds);
-          message.attachments = normalAttachments;
-        }
       })
     );
   }
