@@ -97,58 +97,45 @@ export default function applyAttachmentPatcher() {
         const normalAttachments: any[] = [];
         const fakeEmbeds: any[] = [];
 
-        message.attachments.forEach((att) => {
+        message.attachments.forEach(async (att) => {
           if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
-            if (Embed && EmbedMedia) {
-              // Use Discord's internal constructors with ALL required fields
-              const imageMedia = new EmbedMedia({
-                url: "https://i.imgur.com/7dZrkGD.png",
-                proxyURL: "https://i.imgur.com/7dZrkGD.png",
-                width: 200,
-                height: 200,
-                srcIsAnimated: false
-                // Add any other required fields that might be missing
-              });
+            try {
+              // Decode the image from the attachment
+              const response = await fetch(att.url);
+              const obfText = await response.text();
+              const bytes = unscrambleBuffer(obfText, vstorage.secret);
 
-              const embed = new Embed({
-                type: "image",
-                url: "https://i.imgur.com/7dZrkGD.png",
-                image: imageMedia,
-                thumbnail: imageMedia,
-                description: "Preview of obfuscated image",
-                color: 0x2f3136,
-                // Add body.TextColor if Embed requires it
-                bodyTextColor: 0xffffff
-              });
-              fakeEmbeds.push(embed);
-            } else {
-              // Fallback - try to find what fields are actually required
-              const embedMediaFields = {
-                url: "https://i.imgur.com/7dZrkGD.png",
-                proxyURL: "https://i.imgur.com/7dZrkGD.png", 
-                width: 200,
-                height: 200,
-                srcIsAnimated: false,
-                // Try adding common media fields
-                placeholder: null,
-                placeholderVersion: 0,
-                contentScanVersion: 0,
-                flags: 0
-              }; 
+              const mimeType = detectImageType(bytes) || "image/png";
+              const base64 = btoa(String.fromCharCode(...bytes));
+              const dataUrl = `data:${mimeType};base64,${base64}`;
 
-              fakeEmbeds.push({
-                type: "image",
-                url: "https://i.imgur.com/7dZrkGD.png",
-                image: embedMediaFields,
-                thumbnail: embedMediaFields,
-                description: "Preview of obfuscated image",
-                color: 0x2f3136,
-                bodyTextColor: 0xffffff
-              });
+              if (Embed && EmbedMedia) {
+                const imageMedia = new EmbedMedia({
+                  url: dataUrl,
+                  proxyURL: dataUrl,
+                  width: 200,
+                  height: 200,
+                  srcIsAnimated: false
+                });
+
+                const embed = new Embed({
+                  type: "image",
+                  url: dataUrl,
+                  image: imageMedia,
+                  thumbnail: imageMedia,
+                  description: "Decoded obfuscated image",
+                  color: 0x2f3136,
+                  bodyTextColor: 0xffffff
+                });
+                fakeEmbeds.push(embed);
+              }
+            } catch (e) {
+              console.error("Failed to decode image for embed:", e);
+              // Fallback to placeholder
             }
           } else {
             normalAttachments.push(att);
-          } 
+          }
         });
 
         if (fakeEmbeds.length) {
