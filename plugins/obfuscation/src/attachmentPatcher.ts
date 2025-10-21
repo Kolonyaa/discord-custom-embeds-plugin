@@ -4,6 +4,7 @@ import { findByName, findByProps } from "@vendetta/metro";
 import { vstorage } from "./storage";
 import { unscrambleBuffer } from "./obfuscationUtils";
 import { React } from "@vendetta/metro/common";
+import { showToast } from "@vendetta/ui/toasts";
 
 const ATTACHMENT_FILENAME = "obfuscated_attachment.txt";
 
@@ -41,18 +42,36 @@ function bytesToDataUrl(bytes: Uint8Array, mimeType: string): string {
 }
 
 // Async function to decode and cache image
-async function decodeAndCacheImage(attachmentUrl: string): Promise<void> {
-  if (imageCache.has(attachmentUrl)) return;
+async function decodeAndCacheImage(attachmentUrl: string, filename: string): Promise<void> {
+  if (imageCache.has(attachmentUrl)) {
+    console.log("[ObfuscationPlugin] Image already cached:", attachmentUrl);
+    return;
+  }
 
   try {
+    showToast(`🔍 Decoding ${filename}...`);
     console.log("[ObfuscationPlugin] Starting to decode image:", attachmentUrl);
     
     const response = await fetch(attachmentUrl);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
     const obfText = await response.text();
     console.log("[ObfuscationPlugin] Fetched text length:", obfText.length);
+    showToast(`📄 Got ${obfText.length} chars from ${filename}`);
+    
+    if (!obfText || obfText.length === 0) {
+      throw new Error("Empty text content");
+    }
     
     const bytes = unscrambleBuffer(obfText, vstorage.secret);
     console.log("[ObfuscationPlugin] Decoded bytes length:", bytes.length);
+    showToast(`🔓 Decoded ${bytes.length} bytes from ${filename}`);
+    
+    if (!bytes || bytes.length === 0) {
+      throw new Error("No bytes after decoding");
+    }
     
     const mimeType = detectImageType(bytes) || "image/png";
     console.log("[ObfuscationPlugin] Detected mime type:", mimeType);
@@ -68,9 +87,11 @@ async function decodeAndCacheImage(attachmentUrl: string): Promise<void> {
     
     imageCache.set(attachmentUrl, imageData);
     console.log("[ObfuscationPlugin] Image successfully cached");
+    showToast(`✅ ${filename} decoded successfully!`);
     
   } catch (e) {
     console.error("[ObfuscationPlugin] Failed to decode image:", e);
+    showToast(`❌ Failed to decode ${filename}: ${e.message}`);
   }
 }
 
@@ -95,7 +116,7 @@ export default function applyAttachmentPatcher() {
             message.attachments.forEach(att => {
               if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
                 // Start decoding in the background
-                decodeAndCacheImage(att.url);
+                decodeAndCacheImage(att.url, att.filename);
               }
             });
           }
@@ -107,7 +128,7 @@ export default function applyAttachmentPatcher() {
               message.attachments.forEach(att => {
                 if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
                   // Start decoding in the background
-                  decodeAndCacheImage(att.url);
+                  decodeAndCacheImage(att.url, att.filename);
                 }
               });
             }
@@ -138,9 +159,13 @@ export default function applyAttachmentPatcher() {
             
             const description = cachedImage 
               ? "Decoded obfuscated image" 
-              : "Decoding image... (click to reload)";
+              : "Decoding image...";
 
             console.log("[ObfuscationPlugin] Rendering embed for:", att.filename, "cached:", !!cachedImage);
+            
+            if (cachedImage) {
+              showToast(`🎨 Rendering decoded: ${att.filename}`);
+            }
             
             if (Embed && EmbedMedia) {
               const imageMedia = new EmbedMedia({
