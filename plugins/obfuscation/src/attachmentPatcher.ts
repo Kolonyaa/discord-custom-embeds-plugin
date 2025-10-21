@@ -118,9 +118,7 @@ export default function applyAttachmentPatcher() {
                 description: "Preview of obfuscated image",
                 color: 0x2f3136,
                 // Add body.TextColor if Embed requires it
-                body: {
-                  TextColor: 0xffffff // or find the correct value
-                }
+                bodyTextColor: 0xffffff
               });
               fakeEmbeds.push(embed);
             } else {
@@ -145,9 +143,7 @@ export default function applyAttachmentPatcher() {
                 thumbnail: embedMediaFields,
                 description: "Preview of obfuscated image",
                 color: 0x2f3136,
-                body: {
-                  TextColor: 0xffffff
-                }
+                bodyTextColor: 0xffffff
               });
             }
           } else {
