@@ -1,135 +1,105 @@
-// attachmentPatcher.tsx
-import { after, before } from "@vendetta/patcher";
-import { findByName } from "@vendetta/metro";
+import { findByName, findByProps } from "@vendetta/metro";
+import { FluxDispatcher, ReactNative } from "@vendetta/metro/common";
+import { after, before, instead } from "@vendetta/patcher";
 import { vstorage } from "./storage";
 import { unscrambleBuffer } from "./obfuscationUtils";
-import { React, ReactNative } from "@vendetta/metro/common";
 
-const { View, Image, ActivityIndicator, Text } = ReactNative;
+const patches = [];
+const ChannelMessages = findByProps("_channelMessages");
+const MessageRecordUtils = findByProps("updateMessageRecord", "createMessageRecord");
+const MessageRecord = findByName("MessageRecord", false);
+const RowManager = findByName("RowManager");
 
 const ATTACHMENT_FILENAME = "obfuscated_attachment.txt";
-const INVISIBLE_MARKER = "\u200b\u200d\u200b";
 
-const RowManager = findByName("RowManager");
-const filetypes = new Set(["txt"]);
+// Instead of creating fake embeds, modify the attachment record directly
+patches.push(after("createMessageRecord", MessageRecordUtils, function ([message], record) {
+  if (!message.attachments?.length) return;
+  
+  const modifiedAttachments = [];
+  
+  for (const att of message.attachments) {
+    if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
+      // Convert the txt attachment to appear as an image attachment
+      modifiedAttachments.push({
+        ...att,
+        filename: "image.png",
+        content_type: "image/png",
+        // Keep the original URL but change how it's displayed
+        __vml_is_obfuscated_image: true,
+        __vml_original_url: att.url
+      });
+    } else {
+      modifiedAttachments.push(att);
+    }
+  }
+  
+  if (modifiedAttachments.length !== message.attachments.length) {
+    record.attachments = modifiedAttachments;
+  }
+}));
 
-// Detect image type from Uint8Array
-function detectImageType(data: Uint8Array): string | null {
-  if (data.length < 4) return null;
-  if (data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return "image/jpeg";
-  if (data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47) return "image/png";
-  if (data[0] === 0x47 && data[1] === 0x49 && data[2] === 0x46) return "image/gif";
-  if (
-    data.length >= 12 &&
-    data[0] === 0x52 &&
-    data[1] === 0x49 &&
-    data[2] === 0x46 &&
-    data[3] === 0x46 &&
-    data[8] === 0x57 &&
-    data[9] === 0x45 &&
-    data[10] === 0x42 &&
-    data[11] === 0x50
-  )
-    return "image/webp";
-  return null;
+patches.push(after("default", MessageRecord, ([props], record) => {
+  if (props.attachments?.length) {
+    const modifiedAttachments = [];
+    
+    for (const att of props.attachments) {
+      if (att.__vml_is_obfuscated_image) {
+        modifiedAttachments.push({
+          ...att,
+          // Ensure it displays as an image
+          content_type: "image/png",
+          __vml_is_obfuscated_image: true
+        });
+      } else {
+        modifiedAttachments.push(att);
+      }
+    }
+    
+    if (modifiedAttachments.length !== props.attachments.length) {
+      record.attachments = modifiedAttachments;
+    }
+  }
+}));
+
+// Patch the RowManager to handle the display of obfuscated images
+patches.push(after("generate", RowManager.prototype, ([data], row) => {
+  if (!data.message?.attachments?.length) return;
+  
+  const { message } = data;
+  
+  // Look for obfuscated attachments and modify their display
+  message.attachments.forEach((att, index) => {
+    if (att.__vml_is_obfuscated_image) {
+      // Here you can modify how the attachment is displayed
+      // You might need to patch the attachment component directly
+      console.log("Found obfuscated image attachment:", att);
+    }
+  });
+}));
+
+// Alternative approach: Patch the attachment component directly
+const Attachment = findByName("Attachment") || findByProps("Attachment")?.Attachment;
+if (Attachment) {
+  patches.push(after("default", Attachment, ([props], component) => {
+    if (props.attachment?.__vml_is_obfuscated_image) {
+      // Modify the attachment props to display as image
+      return {
+        ...component,
+        props: {
+          ...props,
+          attachment: {
+            ...props.attachment,
+            content_type: "image/png",
+            filename: "image.png"
+          }
+        }
+      };
+    }
+    return component;
+  }));
 }
 
-// Inline image component
-const InlineImage: React.FC<{ attachment: any }> = ({ attachment }) => {
-  const [url, setUrl] = React.useState<string | null>(null);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState(false);
-
-  React.useEffect(() => {
-    (async () => {
-      try {
-        setLoading(true);
-        const response = await fetch(attachment.url);
-        const obfText = await response.text();
-        const bytes = unscrambleBuffer(obfText, vstorage.secret);
-
-        const mimeType = detectImageType(bytes) || "image/jpeg";
-        const blob = new Blob([bytes], { type: mimeType });
-        const blobUrl = URL.createObjectURL(blob);
-        setUrl(blobUrl);
-      } catch (e) {
-        console.error("[ObfuscationPlugin] Failed decoding inline image:", e);
-        setError(true);
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, [attachment.url]);
-
-  if (loading) return React.createElement(ActivityIndicator, { size: "small" });
-  if (error || !url)
-    return React.createElement(
-      View,
-      { style: { marginTop: 4 } },
-      React.createElement(Text, { style: { color: "red" } }, "Failed to load image")
-    );
-
-  return React.createElement(Image, {
-    source: { uri: url },
-    style: {
-      width: 200,
-      height: 200,
-      resizeMode: "contain",
-      borderRadius: 8,
-      marginTop: 4,
-    },
-  });
-};
-
 export default function applyAttachmentPatcher() {
-  const patches: (() => void)[] = [];
-
-  if (RowManager?.prototype?.generate) {
-    // First patch: remove the text attachments and mark the message
-    patches.push(
-      before("generate", RowManager.prototype, ([data]) => {
-        if (data.rowType !== 1) return; // Only process regular messages
-
-        const { message } = data;
-        if (!message?.attachments?.length) return;
-
-        const obfuscatedAttachments = message.attachments.filter(
-          att => att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")
-        );
-
-        if (obfuscatedAttachments.length > 0) {
-          // Remove obfuscated attachments from the message
-          message.attachments = message.attachments.filter(
-            att => !(att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt"))
-          );
-
-          // Store the obfuscated attachments for later processing
-          data.__obfuscatedImages = obfuscatedAttachments;
-        }
-      })
-    );
-
-    // Second patch: modify the rendered content to include our images
-    patches.push(
-      after("generate", RowManager.prototype, ([data], row) => {
-        if (data.rowType !== 1 || !data.__obfuscatedImages) return;
-        
-        const { content } = row;
-        if (!Array.isArray(content)) return;
-
-        // Add our inline images after the message content
-        data.__obfuscatedImages.forEach((attachment, index) => {
-          content.push({
-            type: "component",
-            component: React.createElement(InlineImage, { 
-              key: `obfuscated-${attachment.id}-${index}`,
-              attachment: attachment 
-            })
-          });
-        });
-      })
-    );
-  }
-
   return () => patches.forEach((unpatch) => unpatch());
 }
