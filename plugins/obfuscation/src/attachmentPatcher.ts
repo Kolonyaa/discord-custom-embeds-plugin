@@ -102,8 +102,8 @@ export default function applyAttachmentPatcher() {
               proxy_url: "https://i.imgur.com/OVdVw5k.png",
               width: 200,
               height: 200,
-              
-              bodyTextColor: 0, 
+
+              bodyTextColor: 0
             });
           } else {
             normalAttachments.push(att);
