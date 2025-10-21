@@ -15,62 +15,40 @@ export default function applyAttachmentPatcher() {
   const Embed = findByName("Embed") || findByProps("Embed")?.Embed;
   const EmbedMedia = findByName("EmbedMedia") || findByProps("EmbedMedia")?.EmbedMedia;
   const RowManager = findByName("RowManager");
-  const CloudUpload = findByName("CloudUpload")?.CloudUpload;;
+  const MessageActions = findByProps("sendMessage", "receiveMessage");
 
 
 
 
-  // PATCH 1: Intercept file uploads using CloudUpload (same pattern as file upload plugin)
-  if (CloudUpload?.prototype?.reactNativeCompressAndExtractData) {
-    const originalUpload = CloudUpload.prototype.reactNativeCompressAndExtractData;
+  // PATCH 2: Handle incoming obfuscated attachments
+  if (MessageActions?.receiveMessage) {
+    patches.push(
+      before("receiveMessage", MessageActions, (args) => {
+        try {
+          if (!vstorage.enabled || !vstorage.secret) return;
 
-    CloudUpload.prototype.reactNativeCompressAndExtractData = async function (...args: any[]) {
-      try {
-        if (!vstorage.enabled || !vstorage.secret) {
-          return originalUpload.apply(this, args);
+          const message = args[0];
+          if (!message?.attachments?.length) return;
+
+          let hasObfuscatedAttachments = false;
+
+          message.attachments.forEach((attachment: any) => {
+            if (attachment.filename === ATTACHMENT_FILENAME) {
+              hasObfuscatedAttachments = true;
+              (attachment as any).__isObfuscated = true;
+            }
+          });
+
+          // Add marker to content if we have obfuscated attachments
+          if (hasObfuscatedAttachments && message.content && !message.content.includes(INVISIBLE_MARKER)) {
+            message.content = INVISIBLE_MARKER + message.content;
+          }
+
+        } catch (e) {
+          console.error("[ObfuscationPlugin] Error processing incoming attachments:", e);
         }
-
-        const file = this;
-        const filename = file?.filename ?? "file";
-        
-        // Check if it's an image
-        const isImage = file?.type?.startsWith("image/") || 
-                       /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(filename);
-
-        if (!isImage) {
-          return originalUpload.apply(this, args);
-        }
-
-        console.log("[ObfuscationPlugin] Obfuscating image upload:", filename);
-
-        // Read the file data
-        const fileData = await originalUpload.apply(this, args);
-        if (!fileData) return null;
-
-        // Obfuscate the image data
-        const obfuscatedData = scrambleBuffer(new Uint8Array(fileData), vstorage.secret);
-        
-        // Convert to ArrayBuffer for Discord
-        const obfuscatedArrayBuffer = new TextEncoder().encode(obfuscatedData).buffer;
-
-        // Update file metadata
-        file.filename = ATTACHMENT_FILENAME;
-        file.contentType = "text/plain";
-
-        showToast("🔒 Image obfuscated");
-
-        return obfuscatedArrayBuffer;
-
-      } catch (e) {
-        console.error("[ObfuscationPlugin] Error obfuscating upload:", e);
-        showToast("❌ Failed to obfuscate image");
-        return originalUpload.apply(this, args);
-      }
-    };
-
-    patches.push(() => {
-      CloudUpload.prototype.reactNativeCompressAndExtractData = originalUpload;
-    });
+      })
+    );
   }
 
 
