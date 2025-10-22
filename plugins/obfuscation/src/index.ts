@@ -6,7 +6,6 @@ import Settings from "./Settings";
 let unpatch: () => void;
 let pillUnpatch: () => void;
 let attachmentUnpatch: () => void;
-let renderUnpatch: () => void;
 
 export function onLoad() {
   // Initialize all patchers
