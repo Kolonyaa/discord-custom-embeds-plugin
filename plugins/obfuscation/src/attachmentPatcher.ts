@@ -9,81 +9,40 @@ import { scrambleBuffer, unscrambleBuffer } from "./obfuscationUtils";
 const ATTACHMENT_FILENAME = "obfuscated_attachment.txt";
 const INVISIBLE_MARKER = "\u200b\u200d\u200b";
 
-// Cache for decoded images
-const imageCache = new Map<string, { dataUrl: string; width: number; height: number; mimeType: string }>();
-
-// Detect image type from Uint8Array
-function detectImageType(data: Uint8Array): string | null {
-  if (data.length < 4) return null;
-  if (data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return "image/jpeg";
-  if (data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47) return "image/png";
-  if (data[0] === 0x47 && data[1] === 0x49 && data[2] === 0x46) return "image/gif";
-  if (
-    data.length >= 12 &&
-    data[0] === 0x52 &&
-    data[1] === 0x49 &&
-    data[2] === 0x46 &&
-    data[3] === 0x46 &&
-    data[8] === 0x57 &&
-    data[9] === 0x45 &&
-    data[10] === 0x42 &&
-    data[11] === 0x50
-  )
-    return "image/webp";
-  return null;
-}
-
-// Convert Uint8Array to base64 data URL
-function bytesToDataUrl(bytes: Uint8Array, mimeType: string): string {
-  const base64 = btoa(String.fromCharCode(...bytes));
-  return `data:${mimeType};base64,${base64}`;
-}
-
-// Async function to decode and cache image
-async function decodeAndCacheImage(attachmentUrl: string, filename: string): Promise<void> {
-  if (imageCache.has(attachmentUrl)) return;
-
+// Litterbox upload function (adapted from the plugin)
+async function uploadToLitterbox(media: any, duration = "1h"): Promise<string | null> {
   try {
-    console.log("[ObfuscationPlugin] Starting to decode image:", attachmentUrl);
-    
-    const response = await fetch(attachmentUrl);
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    
-    const obfText = await response.text();
-    console.log("[ObfuscationPlugin] Fetched text length:", obfText.length);
-    
-    if (!obfText || obfText.length === 0) {
-      throw new Error("Empty text content");
-    }
-    
-    const bytes = unscrambleBuffer(obfText, vstorage.secret);
-    console.log("[ObfuscationPlugin] Decoded bytes length:", bytes.length);
-    
-    if (!bytes || bytes.length === 0) {
-      throw new Error("No bytes after decoding");
-    }
-    
-    const mimeType = detectImageType(bytes) || "image/png";
-    console.log("[ObfuscationPlugin] Detected mime type:", mimeType);
-    
-    const dataUrl = bytesToDataUrl(bytes, mimeType);
-    
-    const imageData = { 
-      dataUrl, 
-      width: 300, 
-      height: 300,
-      mimeType
-    };
-    
-    imageCache.set(attachmentUrl, imageData);
-    console.log("[ObfuscationPlugin] Image successfully cached");
-    showToast(`✅ ${filename} decoded!`);
-    
-  } catch (e) {
-    console.error("[ObfuscationPlugin] Failed to decode image:", e);
-    showToast(`❌ Failed to decode ${filename}`);
+    const fileUri =
+      media?.item?.originalUri ||
+      media?.uri ||
+      media?.fileUri ||
+      media?.path ||
+      media?.sourceURL;
+
+    if (!fileUri) throw new Error("Missing file URI");
+
+    const filename = media.filename ?? "upload";
+
+    const formData = new FormData();
+    formData.append("reqtype", "fileupload");
+    formData.append("time", duration);
+    formData.append("fileToUpload", {
+      uri: fileUri,
+      name: filename,
+      type: media.mimeType ?? "application/octet-stream",
+    } as any);
+
+    const response = await fetch("https://litterbox.catbox.moe/resources/internals/api.php", {
+      method: "POST",
+      body: formData,
+    });
+
+    const text = await response.text();
+    if (!text.startsWith("https://")) throw new Error(text);
+    return text;
+  } catch (err) {
+    console.error("[ObfuscationPlugin] Litterbox upload failed:", err);
+    return null;
   }
 }
 
@@ -95,9 +54,9 @@ export default function applyAttachmentPatcher() {
   const RowManager = findByName("RowManager");
   const MessageActions = findByProps("sendMessage", "receiveMessage");
   const CloudUpload = findByProps("CloudUpload")?.CloudUpload;
-  const FluxDispatcher = findByProps("dirtyDispatch", "subscribe");
+  const ChannelStore = findByProps("getChannelId");
 
-  // FIRST: Intercept file uploads using CloudUpload (same pattern as file upload plugin)
+  // FIRST: Intercept file uploads using CloudUpload
   if (CloudUpload?.prototype?.reactNativeCompressAndExtractData) {
     const originalUpload = CloudUpload.prototype.reactNativeCompressAndExtractData;
 
@@ -118,17 +77,24 @@ export default function applyAttachmentPatcher() {
           return originalUpload.apply(this, args);
         }
 
-        console.log("[ObfuscationPlugin] Obfuscating image upload:", filename);
+        console.log("[ObfuscationPlugin] Uploading image to Litterbox:", filename);
+        showToast("📤 Uploading to Litterbox...");
 
-        // Read the file data
-        const fileData = await originalUpload.apply(this, args);
-        if (!fileData) return null;
+        // Upload to Litterbox
+        const litterboxUrl = await uploadToLitterbox(file, "1h");
+        
+        if (!litterboxUrl) {
+          showToast("❌ Litterbox upload failed");
+          return originalUpload.apply(this, args);
+        }
 
-        // Obfuscate the image data
-        const obfuscatedData = scrambleBuffer(new Uint8Array(fileData), vstorage.secret);
+        console.log("[ObfuscationPlugin] Litterbox URL:", litterboxUrl);
+
+        // Obfuscate the URL
+        const obfuscatedUrl = scrambleBuffer(new TextEncoder().encode(litterboxUrl), vstorage.secret);
         
         // Convert to ArrayBuffer for Discord
-        const obfuscatedArrayBuffer = new TextEncoder().encode(obfuscatedData).buffer;
+        const obfuscatedArrayBuffer = new TextEncoder().encode(obfuscatedUrl).buffer;
 
         // Update file metadata
         file.filename = ATTACHMENT_FILENAME;
@@ -150,11 +116,13 @@ export default function applyAttachmentPatcher() {
     });
   }
 
-  // SECOND: Handle incoming obfuscated attachments AND trigger decoding
+  // SECOND: Handle incoming obfuscated attachments
   if (MessageActions?.receiveMessage) {
     patches.push(
       before("receiveMessage", MessageActions, (args) => {
         try {
+          if (!vstorage.enabled || !vstorage.secret) return;
+
           const message = args[0];
           if (!message?.attachments?.length) return;
 
@@ -164,11 +132,6 @@ export default function applyAttachmentPatcher() {
             if (attachment.filename === ATTACHMENT_FILENAME) {
               hasObfuscatedAttachments = true;
               (attachment as any).__isObfuscated = true;
-              
-              // Trigger background decoding for plugin users
-              if (vstorage.enabled && vstorage.secret) {
-                decodeAndCacheImage(attachment.url, attachment.filename);
-              }
             }
           });
 
@@ -184,104 +147,131 @@ export default function applyAttachmentPatcher() {
     );
   }
 
-  // Also patch FluxDispatcher to catch messages from other sources
-  if (FluxDispatcher) {
-    patches.push(
-      after("dispatch", FluxDispatcher, ([event]) => {
-        if (event.type === "MESSAGE_CREATE" || event.type === "MESSAGE_UPDATE") {
-          const message = event.message;
-          if (message?.attachments?.length && vstorage.enabled && vstorage.secret) {
-            message.attachments.forEach(att => {
-              if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
-                // Start decoding in the background
-                decodeAndCacheImage(att.url, att.filename);
-              }
-            });
-          }
-        }
-      })
-    );
-  }
-
-  // THIRD: Render obfuscated attachments with ACTUAL decoded images
+  // THIRD: Render obfuscated attachments with the actual Litterbox image
   if (RowManager?.prototype?.generate) {
     patches.push(
       after("generate", RowManager.prototype, (_, row) => {
-        const { message } = row;
-        if (!message?.attachments?.length) return;
+        try {
+          const { message } = row;
+          if (!message?.attachments?.length) return;
 
-        const normalAttachments: any[] = [];
-        const fakeEmbeds: any[] = [];
+          const normalAttachments: any[] = [];
+          const fakeEmbeds: any[] = [];
 
-        message.attachments.forEach((att) => {
-          if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
-            // Get cached image data or use placeholder
-            const cachedImage = imageCache.get(att.url);
-            
-            const imageUrl = cachedImage?.dataUrl || "https://i.imgur.com/7dZrkGD.png";
-            const width = cachedImage?.width || 200;
-            const height = cachedImage?.height || 200;
-            
-            const description = cachedImage 
-              ? "Decoded obfuscated image" 
-              : "Obfuscated image (decoding...)";
+          // Process attachments and create embeds for obfuscated ones
+          message.attachments.forEach((att) => {
+            if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
+              // This is an obfuscated attachment - we need to fetch and decode it
+              const fetchAndDecodeAttachment = async () => {
+                try {
+                  // Fetch the attachment content
+                  const response = await fetch(att.url);
+                  const obfuscatedText = await response.text();
+                  
+                  // Deobfuscate to get the Litterbox URL
+                  const litterboxUrl = new TextDecoder().decode(
+                    unscrambleBuffer(obfuscatedText, vstorage.secret)
+                  );
 
-            console.log("[ObfuscationPlugin] Rendering:", att.filename, "cached:", !!cachedImage);
-            
-            if (Embed && EmbedMedia) {
-              const imageMedia = new EmbedMedia({
-                url: imageUrl,
-                proxyURL: imageUrl,
-                width: width,
-                height: height,
-                srcIsAnimated: false
-              });
+                  console.log("[ObfuscationPlugin] Decoded Litterbox URL:", litterboxUrl);
 
-              const embed = new Embed({
-                type: "image",
-                url: imageUrl,
-                image: imageMedia,
-                thumbnail: imageMedia,
-                description: description,
-                color: 0x2f3136,
-                bodyTextColor: 0xffffff
-              });
-              fakeEmbeds.push(embed);
-            } else {
-              const embedMediaFields = {
-                url: imageUrl,
-                proxyURL: imageUrl, 
-                width: width,
-                height: height,
-                srcIsAnimated: false
+                  // Create embed with the actual Litterbox image
+                  if (Embed && EmbedMedia) {
+                    const imageMedia = new EmbedMedia({
+                      url: litterboxUrl,
+                      proxyURL: litterboxUrl,
+                      width: att.width || 200,
+                      height: att.height || 200,
+                      srcIsAnimated: false
+                    });
+
+                    const embed = new Embed({
+                      type: "image",
+                      url: litterboxUrl,
+                      image: imageMedia,
+                      thumbnail: imageMedia,
+                      description: "Obfuscated image",
+                      color: 0x2f3136,
+                      bodyTextColor: 0xffffff
+                    });
+                    fakeEmbeds.push(embed);
+                  } else {
+                    // Fallback if Embed/EmbedMedia not available
+                    const embedMediaFields = {
+                      url: litterboxUrl,
+                      proxyURL: litterboxUrl, 
+                      width: att.width || 200,
+                      height: att.height || 200,
+                      srcIsAnimated: false
+                    };
+
+                    fakeEmbeds.push({
+                      type: "image",
+                      url: litterboxUrl,
+                      image: embedMediaFields,
+                      thumbnail: embedMediaFields,
+                      description: "Obfuscated image",
+                      color: 0x2f3136,
+                      bodyTextColor: 0xffffff
+                    });
+                  }
+
+                  // Update the row to trigger re-render
+                  if (row.forceUpdate) row.forceUpdate();
+                  
+                } catch (error) {
+                  console.error("[ObfuscationPlugin] Error decoding attachment:", error);
+                  
+                  // Fallback to placeholder if decoding fails
+                  const placeholderUrl = "https://i.imgur.com/7dZrkGD.png";
+                  if (Embed && EmbedMedia) {
+                    const imageMedia = new EmbedMedia({
+                      url: placeholderUrl,
+                      proxyURL: placeholderUrl,
+                      width: 200,
+                      height: 200,
+                      srcIsAnimated: false
+                    });
+
+                    const embed = new Embed({
+                      type: "image",
+                      url: placeholderUrl,
+                      image: imageMedia,
+                      thumbnail: imageMedia,
+                      description: "Obfuscated image (failed to decode)",
+                      color: 0xff0000,
+                      bodyTextColor: 0xffffff
+                    });
+                    fakeEmbeds.push(embed);
+                  }
+                }
               };
 
-              fakeEmbeds.push({
-                type: "image",
-                url: imageUrl,
-                image: embedMediaFields,
-                thumbnail: embedMediaFields,
-                description: description,
-                color: 0x2f3136,
-                bodyTextColor: 0xffffff
-              });
+              // Start the async decoding process
+              fetchAndDecodeAttachment();
+            } else {
+              normalAttachments.push(att);
             }
-          } else {
-            normalAttachments.push(att);
-          }
-        });
+          });
 
-        if (fakeEmbeds.length) {
-          if (!message.embeds) message.embeds = [];
-          message.embeds.push(...fakeEmbeds);
-          message.attachments = normalAttachments;
+          // If we have fake embeds (obfuscated attachments), update the message
+          if (fakeEmbeds.length) {
+            if (!message.embeds) message.embeds = [];
+            
+            // Remove any existing obfuscated embeds to avoid duplicates
+            message.embeds = message.embeds.filter((embed: any) => 
+              !embed.description?.includes("Obfuscated image")
+            );
+            
+            message.embeds.push(...fakeEmbeds);
+            message.attachments = normalAttachments;
+          }
+        } catch (e) {
+          console.error("[ObfuscationPlugin] Error in row generation:", e);
         }
       })
     );
   }
 
-  return () => {
-    patches.forEach((unpatch) => unpatch());
-    imageCache.clear();
-  };
+  return () => patches.forEach((unpatch) => unpatch());
 }
