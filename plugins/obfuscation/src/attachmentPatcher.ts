@@ -126,6 +126,7 @@ export default function applyAttachmentPatcher() {
                 thumbnail: { url: placeholderUrl, proxyURL: placeholderUrl, width: 200, height: 200, srcIsAnimated: false },
                 description: "Obfuscated image — decrypting...",
                 color: 0x2f3136,
+                bodyTextColor: 0xffffff
               });
             } else {
               normalAttachments.push(att);
@@ -179,6 +180,7 @@ export default function applyAttachmentPatcher() {
                     thumbnail: { url: imageUrl, proxyURL: imageUrl, width: 200, height: 200, srcIsAnimated: false},
                     description: "Decrypted Litterbox image",
                     color: 0x2f3136,
+                    bodyTextColor: 0xffffff
                   });
                 } catch (err) {
                   console.warn("[ObfuscationPlugin] deobfuscate/fetch error for attachment:", err);
