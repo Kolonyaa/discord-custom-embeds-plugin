@@ -85,41 +85,41 @@ export function applyPatches() {
 
         const file = this;
         const filename = file?.filename ?? "file";
-        
+
         // Check if it's an image
-        const isImage = file?.type?.startsWith("image/") || 
-                       /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(filename);
+        const isImage = file?.type?.startsWith("image/") ||
+          /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(filename);
 
         if (!isImage) {
           return originalUpload.apply(this, args);
         }
 
         console.log("[ObfuscationPlugin] Image detected, will process after upload:", filename);
-        
+
         // Let the original upload complete first
         const result = await originalUpload.apply(this, args);
-        
+
         // Then start Litterbox upload in background
         setTimeout(async () => {
           try {
             showToast("📤 Uploading to Litterbox...");
             const litterboxUrl = await uploadToLitterbox(file, "1h");
-            
+
             if (litterboxUrl) {
               console.log("[ObfuscationPlugin] Litterbox URL received:", litterboxUrl);
-              
+
               // Find the message that was just sent with this image
               const channelId = file?.channelId;
               if (channelId) {
                 const messages = MessageStore.getMessages?.(channelId)?.toArray?.() || [];
                 const currentUser = UserStore.getCurrentUser();
-                
+
                 // Find the most recent message from current user with attachments
                 for (let i = messages.length - 1; i >= 0; i--) {
                   const msg = messages[i];
-                  if (msg.author?.id === currentUser?.id && 
-                      msg.attachments?.length > 0) {
-                    
+                  if (msg.author?.id === currentUser?.id &&
+                    msg.attachments?.length > 0) {
+
                     // Edit the message to add the obfuscated image URL
                     await editMessageWithImageUrl(msg, litterboxUrl, filename);
                     break;
@@ -194,21 +194,32 @@ export function applyPatches() {
         // Check for image markers
         if (obfuscatedContent.includes(IMAGE_MARKER)) {
           const imageParts = obfuscatedContent.split(IMAGE_MARKER).filter(Boolean);
-          
+
           for (const imagePart of imageParts) {
             try {
               const litterboxUrl = unscramble(imagePart, vstorage.secret);
-              
+
               if (litterboxUrl.startsWith("https://")) {
                 console.log("[ObfuscationPlugin] Decoded image URL:", litterboxUrl);
                 hasImages = true;
-                
+
                 // Create image embed using the same method as your emoji rendering
                 const embed = {
                   type: "image",
                   url: litterboxUrl,
-                  thumbnail: { url: litterboxUrl },
-                  image: { url: litterboxUrl }
+                  thumbnail: {
+                    url: litterboxUrl,
+                    proxy_url: litterboxUrl,
+                    width: 400,
+                    height: 400
+                  },
+                  image: {
+                    url: litterboxUrl,
+                    proxy_url: litterboxUrl,
+                    width: 400,
+                    height: 400
+                  },
+                  description: "🔒 Obfuscated Image"
                 };
 
                 if (!message.embeds) message.embeds = [];
@@ -218,7 +229,7 @@ export function applyPatches() {
               console.error("[ObfuscationPlugin] Error decoding image:", e);
             }
           }
-          
+
           // If we have images, only show the visible content
           if (hasImages && visibleContent) {
             finalContent = visibleContent;
@@ -332,10 +343,10 @@ async function editMessageWithImageUrl(originalMessage: any, litterboxUrl: strin
   try {
     const obfuscatedUrl = scramble(litterboxUrl, vstorage.secret);
     const imageContent = `${IMAGE_MARKER}${obfuscatedUrl}`;
-    
+
     const currentContent = originalMessage.content || "";
     let newContent = currentContent;
-    
+
     if (currentContent) {
       newContent = `${currentContent}\n${INVISIBLE_MARKER}${imageContent}`;
     } else {
