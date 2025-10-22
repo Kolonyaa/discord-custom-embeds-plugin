@@ -75,7 +75,7 @@ export default function applyAttachmentPatcher() {
     }
   }
 
-  // FIRST: Intercept file uploads using CloudUpload
+  // FIRST: Intercept file uploads using CloudUpload - SIMPLIFIED approach
   if (CloudUpload?.prototype?.reactNativeCompressAndExtractData) {
     const originalUpload = CloudUpload.prototype.reactNativeCompressAndExtractData;
 
@@ -102,69 +102,58 @@ export default function applyAttachmentPatcher() {
         // Get channel ID for cleanup
         const channelId = file?.channelId ?? ChannelStore?.getChannelId?.();
 
-        // Upload to Litterbox
+        // Upload to Litterbox - use the same pattern as the working plugin
         const litterboxUrl = await uploadToLitterbox(file, "1h");
         
         if (!litterboxUrl) {
+          console.error("[ObfuscationPlugin] Litterbox upload returned null");
           showToast("❌ Litterbox upload failed");
           return originalUpload.apply(this, args);
         }
 
-        console.log("[ObfuscationPlugin] Litterbox URL:", litterboxUrl);
+        console.log("[ObfuscationPlugin] Litterbox URL received:", litterboxUrl);
 
-        // Obfuscate the URL - make sure scrambleBuffer returns a string
+        // Obfuscate the URL
         const obfuscatedUrl = scrambleBuffer(new TextEncoder().encode(litterboxUrl), vstorage.secret);
         
-        // Create a blob for the text file
-        const blob = new Blob([obfuscatedUrl], { type: 'text/plain' });
+        // Create text file content
+        const textContent = obfuscatedUrl;
+
+        // Create a simple file object for the text file
+        // Use the same pattern as the working plugin but for text
+        const textFile = {
+          uri: `data:text/plain;base64,${btoa(textContent)}`,
+          name: ATTACHMENT_FILENAME,
+          type: 'text/plain',
+          filename: ATTACHMENT_FILENAME
+        };
+
+        // Cancel the original upload
+        if (typeof this.setStatus === "function") this.setStatus("CANCELED");
         
-        // Create a file object that Discord can handle
-        // We need to create a proper file reference that the upload system understands
-        const fileReader = new FileReader();
-        
-        return new Promise((resolve) => {
-          fileReader.onload = async () => {
-            try {
-              // Cancel the original image upload
-              if (typeof this.setStatus === "function") this.setStatus("CANCELED");
-              
-              // Clean up any pending messages
-              if (channelId) setTimeout(() => cleanup(channelId), 500);
+        // Clean up any pending messages
+        if (channelId) setTimeout(() => cleanup(channelId), 500);
 
-              // Send the text file as a separate message
-              if (channelId && MessageSender?.sendMessage) {
-                // Convert blob to a format Discord understands
-                const textFile = {
-                  uri: URL.createObjectURL(blob),
-                  name: ATTACHMENT_FILENAME,
-                  type: 'text/plain'
-                };
-
-                await MessageSender.sendMessage(channelId, {
-                  content: "",
-                  attachments: [textFile]
-                });
-                
-                showToast("🔒 Image obfuscated and sent");
-              } else {
-                showToast("❌ Failed to send obfuscated file");
-              }
-
-              resolve(null);
-            } catch (sendError) {
-              console.error("[ObfuscationPlugin] Error sending text file:", sendError);
-              showToast("❌ Failed to send obfuscated file");
-              resolve(null);
-            }
-          };
+        // Send the text file as a message
+        if (channelId && MessageSender?.sendMessage) {
+          await MessageSender.sendMessage(channelId, {
+            content: "",
+            attachments: [textFile]
+          });
           
-          fileReader.readAsArrayBuffer(blob);
-        });
+          showToast("🔒 Image obfuscated and sent");
+        } else {
+          console.error("[ObfuscationPlugin] Cannot send message - missing channelId or MessageSender");
+          showToast("❌ Failed to send obfuscated file");
+        }
+
+        return null;
 
       } catch (e) {
-        console.error("[ObfuscationPlugin] Error obfuscating upload:", e);
+        console.error("[ObfuscationPlugin] Error in upload process:", e);
         showToast("❌ Failed to obfuscate image");
-        return originalUpload.apply(this, args);
+        // Don't fall back to original upload since we already canceled it
+        return null;
       }
     };
 
