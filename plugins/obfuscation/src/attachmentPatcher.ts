@@ -175,8 +175,8 @@ export default function applyAttachmentPatcher() {
                   realEmbeds.push({
                     type: "image",
                     url: imageUrl,
-                    image: { url: imageUrl, proxyURL: imageUrl, width: 200, height: 200 },
-                    thumbnail: { url: imageUrl, proxyURL: imageUrl, width: 200, height: 200 },
+                    image: { url: imageUrl, proxyURL: imageUrl, width: 200, height: 200, srcIsAnimated: false },
+                    thumbnail: { url: imageUrl, proxyURL: imageUrl, width: 200, height: 200, srcIsAnimated: false},
                     description: "Decrypted Litterbox image",
                     color: 0x2f3136,
                   });
