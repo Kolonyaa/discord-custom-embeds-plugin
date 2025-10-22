@@ -9,7 +9,7 @@ import { scrambleBuffer, unscrambleBuffer } from "./obfuscationUtils";
 const ATTACHMENT_FILENAME = "obfuscated_attachment.txt";
 const INVISIBLE_MARKER = "\u200b\u200d\u200b";
 
-// Litterbox upload function (adapted from the plugin)
+// Litterbox upload function
 async function uploadToLitterbox(media: any, duration = "1h"): Promise<string | null> {
   try {
     const fileUri =
@@ -55,6 +55,10 @@ export default function applyAttachmentPatcher() {
   const MessageActions = findByProps("sendMessage", "receiveMessage");
   const CloudUpload = findByProps("CloudUpload")?.CloudUpload;
   const ChannelStore = findByProps("getChannelId");
+  const MessageSender = findByProps("sendMessage");
+
+  // Store for pending uploads
+  const pendingUploads = new Map();
 
   // FIRST: Intercept file uploads using CloudUpload
   if (CloudUpload?.prototype?.reactNativeCompressAndExtractData) {
@@ -93,16 +97,41 @@ export default function applyAttachmentPatcher() {
         // Obfuscate the URL
         const obfuscatedUrl = scrambleBuffer(new TextEncoder().encode(litterboxUrl), vstorage.secret);
         
-        // Convert to ArrayBuffer for Discord
-        const obfuscatedArrayBuffer = new TextEncoder().encode(obfuscatedUrl).buffer;
+        // Create a blob for the text file
+        const blob = new Blob([obfuscatedUrl], { type: 'text/plain' });
+        
+        // Store the file info for the message patch
+        const channelId = file?.channelId || ChannelStore?.getChannelId?.();
+        const uploadId = `${channelId}-${Date.now()}`;
+        
+        pendingUploads.set(uploadId, {
+          filename: ATTACHMENT_FILENAME,
+          blob: blob,
+          contentType: 'text/plain'
+        });
 
-        // Update file metadata
-        file.filename = ATTACHMENT_FILENAME;
-        file.contentType = "text/plain";
+        // Cancel the original upload
+        if (typeof this.setStatus === "function") this.setStatus("CANCELED");
+        
+        // Send the text file as a message
+        const fileObj = {
+          uri: URL.createObjectURL(blob),
+          name: ATTACHMENT_FILENAME,
+          type: 'text/plain'
+        };
 
-        showToast("🔒 Image obfuscated");
+        // Use the message sender to upload the text file
+        if (channelId && MessageSender?.sendMessage) {
+          await MessageSender.sendMessage(channelId, {
+            content: "",
+            attachments: [fileObj]
+          });
+          showToast("🔒 Image obfuscated and sent");
+        } else {
+          showToast("❌ Failed to send obfuscated file");
+        }
 
-        return obfuscatedArrayBuffer;
+        return null;
 
       } catch (e) {
         console.error("[ObfuscationPlugin] Error obfuscating upload:", e);
@@ -129,7 +158,7 @@ export default function applyAttachmentPatcher() {
           let hasObfuscatedAttachments = false;
 
           message.attachments.forEach((attachment: any) => {
-            if (attachment.filename === ATTACHMENT_FILENAME) {
+            if (attachment.filename === ATTACHMENT_FILENAME || attachment.filename?.endsWith('.txt')) {
               hasObfuscatedAttachments = true;
               (attachment as any).__isObfuscated = true;
             }
@@ -156,13 +185,23 @@ export default function applyAttachmentPatcher() {
           if (!message?.attachments?.length) return;
 
           const normalAttachments: any[] = [];
-          const fakeEmbeds: any[] = [];
+          let hasObfuscatedAttachments = false;
 
-          // Process attachments and create embeds for obfuscated ones
+          // First pass: identify obfuscated attachments
           message.attachments.forEach((att) => {
-            if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith(".txt")) {
-              // This is an obfuscated attachment - we need to fetch and decode it
-              const fetchAndDecodeAttachment = async () => {
+            if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith('.txt')) {
+              hasObfuscatedAttachments = true;
+            } else {
+              normalAttachments.push(att);
+            }
+          });
+
+          // If we have obfuscated attachments, process them
+          if (hasObfuscatedAttachments && !(message as any).__obfuscationProcessed) {
+            (message as any).__obfuscationProcessed = true;
+            
+            message.attachments.forEach(async (att) => {
+              if (att.filename === ATTACHMENT_FILENAME || att.filename?.endsWith('.txt')) {
                 try {
                   // Fetch the attachment content
                   const response = await fetch(att.url);
@@ -180,8 +219,8 @@ export default function applyAttachmentPatcher() {
                     const imageMedia = new EmbedMedia({
                       url: litterboxUrl,
                       proxyURL: litterboxUrl,
-                      width: att.width || 200,
-                      height: att.height || 200,
+                      width: 400,
+                      height: 400,
                       srcIsAnimated: false
                     });
 
@@ -190,39 +229,25 @@ export default function applyAttachmentPatcher() {
                       url: litterboxUrl,
                       image: imageMedia,
                       thumbnail: imageMedia,
-                      description: "Obfuscated image",
+                      description: "🔒 Obfuscated Image",
                       color: 0x2f3136,
                       bodyTextColor: 0xffffff
                     });
-                    fakeEmbeds.push(embed);
-                  } else {
-                    // Fallback if Embed/EmbedMedia not available
-                    const embedMediaFields = {
-                      url: litterboxUrl,
-                      proxyURL: litterboxUrl, 
-                      width: att.width || 200,
-                      height: att.height || 200,
-                      srcIsAnimated: false
-                    };
 
-                    fakeEmbeds.push({
-                      type: "image",
-                      url: litterboxUrl,
-                      image: embedMediaFields,
-                      thumbnail: embedMediaFields,
-                      description: "Obfuscated image",
-                      color: 0x2f3136,
-                      bodyTextColor: 0xffffff
-                    });
+                    if (!message.embeds) message.embeds = [];
+                    message.embeds.push(embed);
+                    
+                    // Update attachments to remove the text file
+                    message.attachments = normalAttachments;
+                    
+                    // Force re-render
+                    if (row.forceUpdate) row.forceUpdate();
                   }
-
-                  // Update the row to trigger re-render
-                  if (row.forceUpdate) row.forceUpdate();
                   
                 } catch (error) {
                   console.error("[ObfuscationPlugin] Error decoding attachment:", error);
                   
-                  // Fallback to placeholder if decoding fails
+                  // Fallback placeholder
                   const placeholderUrl = "https://i.imgur.com/7dZrkGD.png";
                   if (Embed && EmbedMedia) {
                     const imageMedia = new EmbedMedia({
@@ -238,33 +263,19 @@ export default function applyAttachmentPatcher() {
                       url: placeholderUrl,
                       image: imageMedia,
                       thumbnail: imageMedia,
-                      description: "Obfuscated image (failed to decode)",
+                      description: "❌ Failed to decode image",
                       color: 0xff0000,
                       bodyTextColor: 0xffffff
                     });
-                    fakeEmbeds.push(embed);
+
+                    if (!message.embeds) message.embeds = [];
+                    message.embeds.push(embed);
+                    message.attachments = normalAttachments;
+                    if (row.forceUpdate) row.forceUpdate();
                   }
                 }
-              };
-
-              // Start the async decoding process
-              fetchAndDecodeAttachment();
-            } else {
-              normalAttachments.push(att);
-            }
-          });
-
-          // If we have fake embeds (obfuscated attachments), update the message
-          if (fakeEmbeds.length) {
-            if (!message.embeds) message.embeds = [];
-            
-            // Remove any existing obfuscated embeds to avoid duplicates
-            message.embeds = message.embeds.filter((embed: any) => 
-              !embed.description?.includes("Obfuscated image")
-            );
-            
-            message.embeds.push(...fakeEmbeds);
-            message.attachments = normalAttachments;
+              }
+            });
           }
         } catch (e) {
           console.error("[ObfuscationPlugin] Error in row generation:", e);
@@ -273,5 +284,8 @@ export default function applyAttachmentPatcher() {
     );
   }
 
-  return () => patches.forEach((unpatch) => unpatch());
+  return () => {
+    patches.forEach((unpatch) => unpatch());
+    pendingUploads.clear();
+  };
 }
