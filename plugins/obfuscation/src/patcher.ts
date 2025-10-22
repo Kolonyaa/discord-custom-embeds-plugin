@@ -99,7 +99,31 @@ export function applyPatches() {
         // Let the original upload complete first
         const result = await originalUpload.apply(this, args);
 
-        // Then start Litterbox upload in background
+        // === SUPPRESS ORIGINAL ATTACHMENT ===
+        try {
+          if (vstorage.enabled && vstorage.secret) {
+            // Strip any fields that make Discord attach the file
+            if (result) {
+              if (result.file) result.file = null;
+              if (result.files) result.files = [];
+              if (result.attachments) result.attachments = [];
+              if ("sendAsAttachment" in result) result.sendAsAttachment = false;
+              if ("shouldAttach" in result) result.shouldAttach = false;
+
+              // Some builds wrap the file data inside nested structures
+              if (result.body?.attachments) result.body.attachments = [];
+              if (result.data?.attachments) result.data.attachments = [];
+              if (result.returnedData?.attachments) result.returnedData.attachments = [];
+            }
+
+            console.log("[ObfuscationPlugin] Suppressed original attachment before sending");
+          }
+        } catch (e) {
+          console.warn("[ObfuscationPlugin] Failed to strip attachments:", e);
+        }
+        // === END SUPPRESS ORIGINAL ATTACHMENT ===
+
+        // Continue with your delayed Litterbox upload
         setTimeout(async () => {
           try {
             showToast("📤 Uploading to Litterbox...");
@@ -108,19 +132,14 @@ export function applyPatches() {
             if (litterboxUrl) {
               console.log("[ObfuscationPlugin] Litterbox URL received:", litterboxUrl);
 
-              // Find the message that was just sent with this image
               const channelId = file?.channelId;
               if (channelId) {
                 const messages = MessageStore.getMessages?.(channelId)?.toArray?.() || [];
                 const currentUser = UserStore.getCurrentUser();
 
-                // Find the most recent message from current user with attachments
                 for (let i = messages.length - 1; i >= 0; i--) {
                   const msg = messages[i];
-                  if (msg.author?.id === currentUser?.id &&
-                    msg.attachments?.length > 0) {
-
-                    // Edit the message to add the obfuscated image URL
+                  if (msg.author?.id === currentUser?.id && msg.attachments?.length > 0) {
                     await editMessageWithImageUrl(msg, litterboxUrl, filename);
                     break;
                   }
@@ -133,7 +152,7 @@ export function applyPatches() {
             console.error("[ObfuscationPlugin] Error processing image:", e);
             showToast("❌ Failed to process image");
           }
-        }, 2000); // Wait 2 seconds for message to be sent
+        }, 2000);
 
         return result;
 
