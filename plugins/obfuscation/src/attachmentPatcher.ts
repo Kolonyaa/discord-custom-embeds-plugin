@@ -1,7 +1,7 @@
 // attachmentPatcher.tsx
 import { before, after } from "@vendetta/patcher";
 import { findByName, findByProps } from "@vendetta/metro";
-import { React } from "@vendetta/metro/common";
+import { React, FluxDispatcher } from "@vendetta/metro/common";
 import { showToast } from "@vendetta/ui/toasts";
 import { vstorage } from "./storage";
 import { scrambleBuffer, unscrambleBuffer } from "./obfuscationUtils";
@@ -32,7 +32,7 @@ export default function applyAttachmentPatcher() {
         const file = this;
         const filename = file?.filename ?? "file";
         const isImage = file?.type?.startsWith("image/") ||
-                        /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(filename);
+          /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(filename);
 
         if (!isImage) {
           return originalUpload.apply(this, args);
@@ -99,67 +99,115 @@ export default function applyAttachmentPatcher() {
   }
 
   // --- 3. Render deobfuscated embeds ---
+
   if (RowManager?.prototype?.generate) {
     patches.push(
-      after("generate", RowManager.prototype, async (_, row) => {
-        const { message } = row;
-        if (!message?.attachments?.length) return;
+      after("generate", RowManager.prototype, (_, row) => {
+        try {
+          const { message } = row;
+          if (!message?.attachments?.length) return;
 
-        const normalAttachments: any[] = [];
-        const fakeEmbeds: any[] = [];
+          const normalAttachments: any[] = [];
+          const placeholderEmbeds: any[] = [];
+          const obfuscatedAttachments: any[] = [];
 
-        for (const att of message.attachments) {
-          if (att.filename === ATTACHMENT_FILENAME) {
+          for (const att of message.attachments) {
+            if (att.filename === ATTACHMENT_FILENAME) {
+              // keep track to fetch+deobfuscate later
+              obfuscatedAttachments.push(att);
+
+              // Add a quick placeholder embed synchronously so renderer is happy.
+              // Use a neutral placeholder; viewable clients will see this until we replace it.
+              const placeholderUrl = "https://i.imgur.com/7dZrkGD.png";
+              placeholderEmbeds.push({
+                type: "image",
+                url: placeholderUrl,
+                image: { url: placeholderUrl, proxyURL: placeholderUrl, width: 200, height: 200 },
+                thumbnail: { url: placeholderUrl, proxyURL: placeholderUrl, width: 200, height: 200 },
+                description: "Obfuscated image — decrypting...",
+                color: 0x2f3136,
+              });
+            } else {
+              normalAttachments.push(att);
+            }
+          }
+
+          if (placeholderEmbeds.length) {
+            // replace attachments with non-obfuscated ones and add placeholders
+            message.embeds = [...(message.embeds || []), ...placeholderEmbeds];
+            message.attachments = normalAttachments;
+          }
+
+          // ASYNC: fetch and deobfuscate in background, then dispatch a message update
+          // Do not await anything here (no async/await in the after hook)
+          (async () => {
             try {
-              const response = await fetch(att.url);
-              const textData = await response.text();
+              if (!vstorage.enabled || !vstorage.secret) return;
 
-              // Deobfuscate URL
-              const deobfuscated = unscrambleBuffer(textData, vstorage.secret);
-              console.log("[ObfuscationPlugin] Deobfuscated URL:", deobfuscated);
+              // For each obfuscated attachment, fetch the .txt, decode, and create a proper embed
+              const realEmbeds: any[] = [];
+              for (const att of obfuscatedAttachments) {
+                try {
+                  // att.url should be accessible; if not, try att.proxy_url / att.url or att.content_url etc.
+                  const urlToFetch = att.url ?? att.proxy_url ?? att.content_url ?? att.download_url;
+                  if (!urlToFetch) continue;
 
-              const imageUrl = deobfuscated.trim();
-              if (!imageUrl.startsWith("https://")) throw new Error("Invalid URL");
+                  const resp = await fetch(urlToFetch);
+                  if (!resp.ok) {
+                    console.warn("[ObfuscationPlugin] failed fetching attachment text:", resp.status);
+                    continue;
+                  }
+                  const textData = await resp.text();
 
-              if (Embed && EmbedMedia) {
-                const media = new EmbedMedia({
-                  url: imageUrl,
-                  proxyURL: imageUrl,
-                  width: 200,
-                  height: 200,
-                  srcIsAnimated: false
-                });
+                  // The obfuscation utilities might accept the raw string or Uint8Array; adapt as needed.
+                  // Here we assume unscrambleBuffer accepts a string and the secret.
+                  const deob = unscrambleBuffer(textData, vstorage.secret);
+                  const imageUrl = (typeof deob === "string" ? deob : new TextDecoder().decode(deob)).trim();
+                  if (!imageUrl) continue;
 
-                const embed = new Embed({
-                  type: "image",
-                  url: imageUrl,
-                  image: media,
-                  thumbnail: media,
-                  description: "Obfuscated Litterbox image",
-                  color: 0x2f3136,
-                });
+                  // Sanity check
+                  if (!imageUrl.startsWith("http")) {
+                    console.warn("[ObfuscationPlugin] deobfuscated URL invalid:", imageUrl);
+                    continue;
+                  }
 
-                fakeEmbeds.push(embed);
-              } else {
-                fakeEmbeds.push({
-                  type: "image",
-                  url: imageUrl,
-                  image: { url: imageUrl },
-                  description: "Obfuscated Litterbox image",
-                });
+                  // Build embed for the real image
+                  realEmbeds.push({
+                    type: "image",
+                    url: imageUrl,
+                    image: { url: imageUrl, proxyURL: imageUrl, width: 200, height: 200 },
+                    thumbnail: { url: imageUrl, proxyURL: imageUrl, width: 200, height: 200 },
+                    description: "Decrypted Litterbox image",
+                    color: 0x2f3136,
+                  });
+                } catch (err) {
+                  console.warn("[ObfuscationPlugin] deobfuscate/fetch error for attachment:", err);
+                  continue;
+                }
               }
 
-            } catch (err) {
-              console.warn("[ObfuscationPlugin] Failed to deobfuscate:", err);
-            }
-          } else {
-            normalAttachments.push(att);
-          }
-        }
+              if (realEmbeds.length) {
+                // Fetch the current message state from store if available or reuse the captured message.
+                // We attempt to preserve other fields and just update embeds/attachments.
+                const updated = {
+                  ...message,
+                  embeds: [...(message.embeds || []).filter(e => e.description !== "Obfuscated image — decrypting..."), ...realEmbeds],
+                  // We already removed the obfuscated `.txt` from attachments earlier; keep it removed.
+                  attachments: normalAttachments,
+                };
 
-        if (fakeEmbeds.length) {
-          message.embeds = [...(message.embeds || []), ...fakeEmbeds];
-          message.attachments = normalAttachments;
+                FluxDispatcher.dispatch({
+                  type: "MESSAGE_UPDATE",
+                  message: updated,
+                  otherPluginBypass: true,
+                });
+              }
+            } catch (err) {
+              console.error("[ObfuscationPlugin] async deobfuscation error:", err);
+            }
+          })();
+        } catch (e) {
+          console.error("[ObfuscationPlugin] RowManager.generate patch error:", e);
         }
       })
     );
