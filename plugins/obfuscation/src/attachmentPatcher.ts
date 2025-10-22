@@ -122,8 +122,8 @@ export default function applyAttachmentPatcher() {
               placeholderEmbeds.push({
                 type: "image",
                 url: placeholderUrl,
-                image: { url: placeholderUrl, proxyURL: placeholderUrl, width: 200, height: 200 },
-                thumbnail: { url: placeholderUrl, proxyURL: placeholderUrl, width: 200, height: 200 },
+                image: { url: placeholderUrl, proxyURL: placeholderUrl, width: 200, height: 200, srcIsAnimated: false },
+                thumbnail: { url: placeholderUrl, proxyURL: placeholderUrl, width: 200, height: 200, srcIsAnimated: false },
                 description: "Obfuscated image — decrypting...",
                 color: 0x2f3136,
               });
