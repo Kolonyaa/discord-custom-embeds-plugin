@@ -9,7 +9,7 @@ import { scrambleBuffer, unscrambleBuffer } from "./obfuscationUtils";
 const ATTACHMENT_FILENAME = "obfuscated_attachment.txt";
 const INVISIBLE_MARKER = "\u200b\u200d\u200b";
 
-// Litterbox upload function
+// Litterbox upload function (exact copy from the plugin)
 async function uploadToLitterbox(media: any, duration = "1h"): Promise<string | null> {
   try {
     const fileUri =
@@ -56,9 +56,24 @@ export default function applyAttachmentPatcher() {
   const CloudUpload = findByProps("CloudUpload")?.CloudUpload;
   const ChannelStore = findByProps("getChannelId");
   const MessageSender = findByProps("sendMessage");
+  const PendingMessages = findByProps("getPendingMessages", "deletePendingMessage");
 
-  // Store for pending uploads
-  const pendingUploads = new Map();
+  // Helper function to cleanup pending messages (from plugin)
+  function cleanup(channelId: string) {
+    try {
+      const pending = PendingMessages?.getPendingMessages?.(channelId);
+      if (!pending) return;
+
+      for (const [messageId, message] of Object.entries(pending)) {
+        if (message.state === "FAILED") {
+          PendingMessages.deletePendingMessage(channelId, messageId);
+          console.log(`[ObfuscationPlugin] Deleted failed message: ${messageId}`);
+        }
+      }
+    } catch (err) {
+      console.warn("[ObfuscationPlugin] Failed to delete pending messages:", err);
+    }
+  }
 
   // FIRST: Intercept file uploads using CloudUpload
   if (CloudUpload?.prototype?.reactNativeCompressAndExtractData) {
@@ -84,6 +99,9 @@ export default function applyAttachmentPatcher() {
         console.log("[ObfuscationPlugin] Uploading image to Litterbox:", filename);
         showToast("📤 Uploading to Litterbox...");
 
+        // Get channel ID for cleanup
+        const channelId = file?.channelId ?? ChannelStore?.getChannelId?.();
+
         // Upload to Litterbox
         const litterboxUrl = await uploadToLitterbox(file, "1h");
         
@@ -94,44 +112,54 @@ export default function applyAttachmentPatcher() {
 
         console.log("[ObfuscationPlugin] Litterbox URL:", litterboxUrl);
 
-        // Obfuscate the URL
+        // Obfuscate the URL - make sure scrambleBuffer returns a string
         const obfuscatedUrl = scrambleBuffer(new TextEncoder().encode(litterboxUrl), vstorage.secret);
         
         // Create a blob for the text file
         const blob = new Blob([obfuscatedUrl], { type: 'text/plain' });
         
-        // Store the file info for the message patch
-        const channelId = file?.channelId || ChannelStore?.getChannelId?.();
-        const uploadId = `${channelId}-${Date.now()}`;
+        // Create a file object that Discord can handle
+        // We need to create a proper file reference that the upload system understands
+        const fileReader = new FileReader();
         
-        pendingUploads.set(uploadId, {
-          filename: ATTACHMENT_FILENAME,
-          blob: blob,
-          contentType: 'text/plain'
+        return new Promise((resolve) => {
+          fileReader.onload = async () => {
+            try {
+              // Cancel the original image upload
+              if (typeof this.setStatus === "function") this.setStatus("CANCELED");
+              
+              // Clean up any pending messages
+              if (channelId) setTimeout(() => cleanup(channelId), 500);
+
+              // Send the text file as a separate message
+              if (channelId && MessageSender?.sendMessage) {
+                // Convert blob to a format Discord understands
+                const textFile = {
+                  uri: URL.createObjectURL(blob),
+                  name: ATTACHMENT_FILENAME,
+                  type: 'text/plain'
+                };
+
+                await MessageSender.sendMessage(channelId, {
+                  content: "",
+                  attachments: [textFile]
+                });
+                
+                showToast("🔒 Image obfuscated and sent");
+              } else {
+                showToast("❌ Failed to send obfuscated file");
+              }
+
+              resolve(null);
+            } catch (sendError) {
+              console.error("[ObfuscationPlugin] Error sending text file:", sendError);
+              showToast("❌ Failed to send obfuscated file");
+              resolve(null);
+            }
+          };
+          
+          fileReader.readAsArrayBuffer(blob);
         });
-
-        // Cancel the original upload
-        if (typeof this.setStatus === "function") this.setStatus("CANCELED");
-        
-        // Send the text file as a message
-        const fileObj = {
-          uri: URL.createObjectURL(blob),
-          name: ATTACHMENT_FILENAME,
-          type: 'text/plain'
-        };
-
-        // Use the message sender to upload the text file
-        if (channelId && MessageSender?.sendMessage) {
-          await MessageSender.sendMessage(channelId, {
-            content: "",
-            attachments: [fileObj]
-          });
-          showToast("🔒 Image obfuscated and sent");
-        } else {
-          showToast("❌ Failed to send obfuscated file");
-        }
-
-        return null;
 
       } catch (e) {
         console.error("[ObfuscationPlugin] Error obfuscating upload:", e);
@@ -286,6 +314,5 @@ export default function applyAttachmentPatcher() {
 
   return () => {
     patches.forEach((unpatch) => unpatch());
-    pendingUploads.clear();
   };
 }
