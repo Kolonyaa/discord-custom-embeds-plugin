@@ -8,7 +8,6 @@ import { scrambleBuffer, unscrambleBuffer } from "./obfuscationUtils";
 const CloudUpload = findByProps("CloudUpload")?.CloudUpload;
 const MessageSender = findByProps("sendMessage");
 const ChannelStore = findByProps("getChannelId");
-const PendingMessages = findByProps("getPendingMessages", "deletePendingMessage");
 
 const INVISIBLE_MARKER = "\u200b\u200d\u200b";
 
@@ -52,7 +51,41 @@ async function uploadToLitterbox(media: any, duration = "1h"): Promise<string | 
 export default function applyAttachmentPatcher() {
   const patches: (() => void)[] = [];
 
-  // Patch the uploader to handle image attachments
+  // Approach 1: Patch CloudUpload constructor (like the filename anonymizer)
+  if (CloudUpload) {
+    patches.push(
+      before("CloudUpload", CloudUpload, (args) => {
+        try {
+          if (!vstorage.enabled || !vstorage.secret) return;
+
+          const uploadObject = args[0];
+          if (!uploadObject) return;
+
+          const filename = uploadObject.filename ?? "file";
+          
+          // Check if it's an image
+          const isImage = uploadObject?.type?.startsWith("image/") || 
+                         /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(filename);
+
+          if (!isImage) return;
+
+          console.log("[ObfuscationPlugin] Intercepting image upload:", filename);
+          
+          // Store the original upload object for later processing
+          uploadObject.__originalType = uploadObject.type;
+          uploadObject.__originalFilename = uploadObject.filename;
+          
+          // We'll process this in the upload method
+          uploadObject.__shouldObfuscate = true;
+
+        } catch (e) {
+          console.error("[ObfuscationPlugin] Error in CloudUpload patch:", e);
+        }
+      })
+    );
+  }
+
+  // Approach 2: Patch the upload method
   if (CloudUpload?.prototype?.reactNativeCompressAndExtractData) {
     const originalUpload = CloudUpload.prototype.reactNativeCompressAndExtractData;
 
@@ -63,20 +96,15 @@ export default function applyAttachmentPatcher() {
         }
 
         const file = this;
-        const filename = file?.filename ?? "file";
         
-        // Check if it's an image
-        const isImage = file?.type?.startsWith("image/") || 
-                       /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(filename);
-
-        if (!isImage) {
+        // Check if this upload should be obfuscated
+        if (!file.__shouldObfuscate) {
           return originalUpload.apply(this, args);
         }
 
-        console.log("[ObfuscationPlugin] Uploading image to Litterbox:", filename);
+        const filename = file.__originalFilename ?? file.filename ?? "file";
+        console.log("[ObfuscationPlugin] Processing image for obfuscation:", filename);
         showToast("📤 Uploading to Litterbox...");
-
-        const channelId = file?.channelId ?? ChannelStore?.getChannelId?.();
 
         // Upload to Litterbox
         const litterboxUrl = await uploadToLitterbox(file, "1h");
@@ -92,41 +120,22 @@ export default function applyAttachmentPatcher() {
         // Obfuscate the URL
         const obfuscatedUrl = scrambleBuffer(new TextEncoder().encode(litterboxUrl), vstorage.secret);
         
-        // Find and modify the pending message
-        const pendingMessages = PendingMessages?.getPendingMessages?.(channelId);
-        let foundPendingMessage = false;
+        // Get channel ID to find the pending message
+        const channelId = file?.channelId ?? ChannelStore?.getChannelId?.();
 
-        if (pendingMessages) {
-          for (const [messageId, pendingMsg] of Object.entries(pendingMessages)) {
-            if (pendingMsg.attachments && pendingMsg.attachments.length > 0) {
-              // Add obfuscated URL to content and keep the message
-              const originalContent = pendingMsg.content || "";
-              const obfuscatedContent = `${INVISIBLE_MARKER}${obfuscatedUrl}`;
-              const newContent = originalContent ? 
-                `${originalContent}\n${obfuscatedContent}` : 
-                obfuscatedContent;
-
-              // Update the pending message - remove attachments, add obfuscated content
-              pendingMsg.content = newContent;
-              pendingMsg.attachments = []; // Remove the image attachment
-
-              console.log("[ObfuscationPlugin] Modified pending message with obfuscated URL");
-              foundPendingMessage = true;
-              break;
-            }
-          }
-        }
-
-        if (foundPendingMessage) {
-          showToast("🔒 Image obfuscated");
-          // Return the original upload result to let the message send normally
-          // but with our modifications (no attachments + obfuscated URL in content)
-          return originalUpload.apply(this, args);
+        // Send a new message with the obfuscated URL
+        if (channelId && MessageSender?.sendMessage) {
+          await MessageSender.sendMessage(channelId, { 
+            content: `${INVISIBLE_MARKER}${obfuscatedUrl}`
+          });
+          
+          showToast("🔒 Image obfuscated and sent");
         } else {
-          console.error("[ObfuscationPlugin] Could not find pending message to modify");
-          showToast("❌ Failed to obfuscate image");
-          return originalUpload.apply(this, args);
+          showToast("❌ Failed to send obfuscated image");
         }
+
+        // Return null to cancel the original file upload
+        return null;
 
       } catch (e) {
         console.error("[ObfuscationPlugin] Error obfuscating upload:", e);
