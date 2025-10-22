@@ -6,7 +6,9 @@ import { findByProps } from "@vendetta/metro";
 import { scrambleBuffer, unscrambleBuffer } from "./obfuscationUtils";
 
 const CloudUpload = findByProps("CloudUpload")?.CloudUpload;
-const uploadModule = findByProps("uploadLocalFiles");
+const MessageSender = findByProps("sendMessage");
+const ChannelStore = findByProps("getChannelId");
+const PendingMessages = findByProps("getPendingMessages", "deletePendingMessage");
 
 const INVISIBLE_MARKER = "\u200b\u200d\u200b";
 
@@ -50,13 +52,10 @@ async function uploadToLitterbox(media: any, duration = "1h"): Promise<string | 
 export default function applyAttachmentPatcher() {
   const patches: (() => void)[] = [];
 
-  // Store for pending uploads to avoid duplicate processing
-  const processingUploads = new Set();
-
-  // Approach 1: Patch CloudUpload constructor (like the filename randomizer)
+  // FIRST: Patch CloudUpload constructor to intercept image uploads
   if (CloudUpload) {
     patches.push(
-      before("CloudUpload", CloudUpload, async (args) => {
+      before("CloudUpload", CloudUpload, (args) => {
         try {
           if (!vstorage.enabled || !vstorage.secret) return;
 
@@ -64,126 +63,117 @@ export default function applyAttachmentPatcher() {
           if (!uploadObject) return;
 
           const filename = uploadObject.filename ?? "";
-          
-          // Check if it's an image
           const isImage = uploadObject.type?.startsWith("image/") || 
                          /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(filename);
 
           if (!isImage) return;
 
-          // Avoid processing the same upload multiple times
-          const uploadKey = `${filename}-${Date.now()}`;
-          if (processingUploads.has(uploadKey)) return;
-          processingUploads.add(uploadKey);
-
-          console.log("[ObfuscationPlugin] Processing image upload:", filename);
-          showToast("📤 Uploading to Litterbox...");
-
-          // Upload to Litterbox
-          const litterboxUrl = await uploadToLitterbox(uploadObject, "1h");
+          console.log("[ObfuscationPlugin] Intercepting image upload:", filename);
           
-          if (!litterboxUrl) {
-            console.error("[ObfuscationPlugin] Litterbox upload failed");
-            showToast("❌ Litterbox upload failed");
-            processingUploads.delete(uploadKey);
-            return;
-          }
+          // Store the original method
+          const originalMethod = uploadObject.reactNativeCompressAndExtractData;
+          
+          // Override the upload method
+          uploadObject.reactNativeCompressAndExtractData = async function (...args: any[]) {
+            try {
+              showToast("📤 Uploading to Litterbox...");
 
-          console.log("[ObfuscationPlugin] Litterbox URL received:", litterboxUrl);
+              // Upload to Litterbox
+              const litterboxUrl = await uploadToLitterbox(this, "1h");
+              
+              if (!litterboxUrl) {
+                console.error("[ObfuscationPlugin] Litterbox upload failed");
+                showToast("❌ Litterbox upload failed");
+                return originalMethod?.apply(this, args);
+              }
 
-          // Obfuscate the URL
-          const obfuscatedUrl = scrambleBuffer(new TextEncoder().encode(litterboxUrl), vstorage.secret);
-          
-          // Modify the upload object to be a text file with the obfuscated URL
-          uploadObject.filename = "obfuscated_image.txt";
-          uploadObject.type = "text/plain";
-          
-          // Create a text file content
-          const textContent = `${INVISIBLE_MARKER}${obfuscatedUrl}`;
-          
-          // Convert to base64 data URI for the file
-          const dataUri = `data:text/plain;base64,${btoa(textContent)}`;
-          
-          // Update the file URI to point to our text content
-          if (uploadObject.item) {
-            uploadObject.item.originalUri = dataUri;
-          }
-          if (uploadObject.uri) {
-            uploadObject.uri = dataUri;
-          }
+              console.log("[ObfuscationPlugin] Litterbox URL received:", litterboxUrl);
 
-          showToast("🔒 Image obfuscated");
-          processingUploads.delete(uploadKey);
+              // Obfuscate the URL
+              const obfuscatedUrl = scrambleBuffer(new TextEncoder().encode(litterboxUrl), vstorage.secret);
+              
+              // Get channel ID
+              const channelId = this?.channelId ?? ChannelStore?.getChannelId?.();
+              
+              // Find and modify the pending message
+              const pendingMessages = PendingMessages?.getPendingMessages?.(channelId);
+              if (pendingMessages) {
+                for (const [messageId, pendingMsg] of Object.entries(pendingMessages)) {
+                  if (pendingMsg.attachments && pendingMsg.attachments.length > 0) {
+                    // Add obfuscated URL to content
+                    const originalContent = pendingMsg.content || "";
+                    const obfuscatedContent = `${INVISIBLE_MARKER}${obfuscatedUrl}`;
+                    const newContent = originalContent ? 
+                      `${originalContent}\n${obfuscatedContent}` : 
+                      obfuscatedContent;
+
+                    // Update the pending message
+                    pendingMsg.content = newContent;
+                    // Remove the image attachment so only our obfuscated URL remains
+                    pendingMsg.attachments = [];
+
+                    console.log("[ObfuscationPlugin] Modified pending message with obfuscated URL");
+                    showToast("🔒 Image obfuscated");
+                    
+                    // Return null to cancel the original file upload
+                    // The message will still send with our modified content
+                    return null;
+                  }
+                }
+              }
+
+              // If we couldn't find/modify the pending message, fall back to original
+              return originalMethod?.apply(this, args);
+
+            } catch (e) {
+              console.error("[ObfuscationPlugin] Error obfuscating upload:", e);
+              showToast("❌ Failed to obfuscate image");
+              return originalMethod?.apply(this, args);
+            }
+          };
 
         } catch (e) {
           console.error("[ObfuscationPlugin] Error in CloudUpload patch:", e);
-          showToast("❌ Failed to obfuscate image");
-          processingUploads.clear();
         }
       })
     );
   }
 
-  // Approach 2: Patch uploadLocalFiles as a fallback (like the filename randomizer)
-  if (uploadModule?.uploadLocalFiles) {
-    patches.push(
-      before("uploadLocalFiles", uploadModule, async (args) => {
-        try {
-          if (!vstorage.enabled || !vstorage.secret) return;
+  // SECOND: Also patch the uploadLocalFiles method as a fallback
+  try {
+    const uploadModule = findByProps("uploadLocalFiles");
+    if (uploadModule) {
+      patches.push(
+        before("uploadLocalFiles", uploadModule, (args) => {
+          try {
+            if (!vstorage.enabled || !vstorage.secret) return;
 
-          const files = args[0]?.items ?? args[0]?.files ?? args[0]?.uploads;
-          if (!Array.isArray(files)) return;
+            const files = args[0]?.items ?? args[0]?.files ?? args[0]?.uploads;
+            if (!Array.isArray(files)) return;
 
-          for (const file of files) {
-            const filename = file.filename ?? file.name ?? "";
+            // Look for image files in the upload batch
+            let hasImages = false;
+            files.forEach((file: any) => {
+              const filename = file.filename ?? "";
+              const isImage = file.type?.startsWith("image/") || 
+                             /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(filename);
+              if (isImage) hasImages = true;
+            });
+
+            if (!hasImages) return;
+
+            console.log("[ObfuscationPlugin] Intercepting uploadLocalFiles with images");
             
-            // Check if it's an image
-            const isImage = file.type?.startsWith("image/") || 
-                           /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(filename);
+            // We'll handle this in the CloudUpload patch above
+            // This just ensures we catch all upload methods
 
-            if (!isImage) continue;
-
-            console.log("[ObfuscationPlugin] Processing image in uploadLocalFiles:", filename);
-            showToast("📤 Uploading to Litterbox...");
-
-            // Upload to Litterbox
-            const litterboxUrl = await uploadToLitterbox(file, "1h");
-            
-            if (!litterboxUrl) {
-              console.error("[ObfuscationPlugin] Litterbox upload failed");
-              showToast("❌ Litterbox upload failed");
-              continue;
-            }
-
-            // Obfuscate the URL
-            const obfuscatedUrl = scrambleBuffer(new TextEncoder().encode(litterboxUrl), vstorage.secret);
-            
-            // Modify the file to be a text file
-            file.filename = "obfuscated_image.txt";
-            file.name = "obfuscated_image.txt";
-            file.type = "text/plain";
-            
-            // Create text content
-            const textContent = `${INVISIBLE_MARKER}${obfuscatedUrl}`;
-            const dataUri = `data:text/plain;base64,${btoa(textContent)}`;
-            
-            // Update file URIs
-            if (file.item) {
-              file.item.originalUri = dataUri;
-            }
-            if (file.uri) {
-              file.uri = dataUri;
-            }
-
-            showToast("🔒 Image obfuscated");
+          } catch (e) {
+            console.error("[ObfuscationPlugin] Error in uploadLocalFiles patch:", e);
           }
-        } catch (e) {
-          console.error("[ObfuscationPlugin] Error in uploadLocalFiles patch:", e);
-          showToast("❌ Failed to obfuscate image");
-        }
-      })
-    );
-  }
+        })
+      );
+    }
+  } catch {}
 
   return () => patches.forEach((unpatch) => unpatch());
 }
