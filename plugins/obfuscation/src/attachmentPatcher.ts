@@ -1,6 +1,5 @@
 // attachmentPatcher.tsx
 import { before } from "@vendetta/patcher";
-import { ReactNative } from "@vendetta/metro/common";
 import { showToast } from "@vendetta/ui/toasts";
 import { vstorage } from "./storage";
 import { findByProps } from "@vendetta/metro";
@@ -50,22 +49,6 @@ async function uploadToLitterbox(media: any, duration = "1h"): Promise<string | 
   }
 }
 
-function cleanup(channelId: string) {
-  try {
-    const pending = PendingMessages?.getPendingMessages?.(channelId);
-    if (!pending) return;
-
-    for (const [messageId, message] of Object.entries(pending)) {
-      if (message.state === "FAILED") {
-        PendingMessages.deletePendingMessage(channelId, messageId);
-        console.log(`[ObfuscationPlugin] Deleted failed message: ${messageId}`);
-      }
-    }
-  } catch (err) {
-    console.warn("[ObfuscationPlugin] Failed to delete pending messages:", err);
-  }
-}
-
 export default function applyAttachmentPatcher() {
   const patches: (() => void)[] = [];
 
@@ -109,35 +92,41 @@ export default function applyAttachmentPatcher() {
         // Obfuscate the URL
         const obfuscatedUrl = scrambleBuffer(new TextEncoder().encode(litterboxUrl), vstorage.secret);
         
-        // Cancel the original upload
-        if (typeof this.setStatus === "function") this.setStatus("CANCELED");
-        if (channelId) setTimeout(() => cleanup(channelId), 500);
-
-        // Find the pending message and modify it
+        // Find and modify the pending message
         const pendingMessages = PendingMessages?.getPendingMessages?.(channelId);
+        let foundPendingMessage = false;
+
         if (pendingMessages) {
           for (const [messageId, pendingMsg] of Object.entries(pendingMessages)) {
             if (pendingMsg.attachments && pendingMsg.attachments.length > 0) {
-              // Remove attachments and add obfuscated URL to content
+              // Add obfuscated URL to content and keep the message
               const originalContent = pendingMsg.content || "";
               const obfuscatedContent = `${INVISIBLE_MARKER}${obfuscatedUrl}`;
               const newContent = originalContent ? 
                 `${originalContent}\n${obfuscatedContent}` : 
                 obfuscatedContent;
 
-              // Update the pending message
+              // Update the pending message - remove attachments, add obfuscated content
               pendingMsg.content = newContent;
-              pendingMsg.attachments = [];
+              pendingMsg.attachments = []; // Remove the image attachment
 
               console.log("[ObfuscationPlugin] Modified pending message with obfuscated URL");
+              foundPendingMessage = true;
               break;
             }
           }
         }
 
-        showToast("🔒 Image obfuscated");
-
-        return null;
+        if (foundPendingMessage) {
+          showToast("🔒 Image obfuscated");
+          // Return the original upload result to let the message send normally
+          // but with our modifications (no attachments + obfuscated URL in content)
+          return originalUpload.apply(this, args);
+        } else {
+          console.error("[ObfuscationPlugin] Could not find pending message to modify");
+          showToast("❌ Failed to obfuscate image");
+          return originalUpload.apply(this, args);
+        }
 
       } catch (e) {
         console.error("[ObfuscationPlugin] Error obfuscating upload:", e);
