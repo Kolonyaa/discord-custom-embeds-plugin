@@ -211,13 +211,15 @@ export function applyPatches() {
                     url: litterboxUrl,
                     proxy_url: litterboxUrl,
                     width: 400,
-                    height: 400
+                    height: 400,
+                    srcIsAnimated: false
                   },
                   image: {
                     url: litterboxUrl,
                     proxy_url: litterboxUrl,
                     width: 400,
-                    height: 400
+                    height: 400,
+                    srcIsAnimated: false
                   },
                   description: "🔒 Obfuscated Image"
                 };
