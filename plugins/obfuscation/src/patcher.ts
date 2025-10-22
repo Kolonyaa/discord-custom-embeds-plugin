@@ -1,24 +1,21 @@
 // attachmentPatcher.tsx
-import { findByProps, findByStoreName, findByName } from "@vendetta/metro";
-import { before, after } from "@vendetta/patcher";
+import { findByProps, findByStoreName } from "@vendetta/metro";
 import { FluxDispatcher } from "@vendetta/metro/common";
+import { before } from "@vendetta/patcher";
 import { showToast } from "@vendetta/ui/toasts";
 import { vstorage } from "./storage";
 import { scramble, unscramble } from "./obfuscationUtils";
 
+const CloudUpload = findByProps("CloudUpload")?.CloudUpload;
 const Messages = findByProps("sendMessage", "editMessage", "receiveMessage");
 const MessageStore = findByStoreName("MessageStore");
-const RowManager = findByName("RowManager");
-const CloudUpload = findByProps("CloudUpload")?.CloudUpload;
+const ChannelStore = findByStoreName("ChannelStore");
 
-// Invisible marker sequence
 const INVISIBLE_MARKER = "\u200b\u200d\u200b";
 const IMAGE_MARKER = "OBFUSCATED_IMAGE:";
 
-// Helper functions
-function hasObfuscationMarker(content: string): boolean {
-  return content?.includes(INVISIBLE_MARKER);
-}
+// Track pending uploads and their corresponding messages
+const pendingUploads = new Map();
 
 // Litterbox upload function
 async function uploadToLitterbox(media: any, duration = "1h"): Promise<string | null> {
@@ -60,10 +57,7 @@ async function uploadToLitterbox(media: any, duration = "1h"): Promise<string | 
 export function applyPatches() {
   const patches = [];
 
-  // Track image uploads by filename
-  const imageUploads = new Map();
-
-  // PATCH 1: Intercept image uploads and store Litterbox URLs
+  // PATCH 1: Intercept image uploads and track them
   if (CloudUpload?.prototype?.reactNativeCompressAndExtractData) {
     const originalUpload = CloudUpload.prototype.reactNativeCompressAndExtractData;
 
@@ -84,30 +78,74 @@ export function applyPatches() {
           return originalUpload.apply(this, args);
         }
 
-        console.log("[ObfuscationPlugin] Uploading image to Litterbox:", filename);
-        showToast("📤 Uploading to Litterbox...");
-
-        // Upload to Litterbox
-        const litterboxUrl = await uploadToLitterbox(file, "1h");
+        console.log("[ObfuscationPlugin] Starting image upload to Litterbox:", filename);
         
-        if (!litterboxUrl) {
-          console.error("[ObfuscationPlugin] Litterbox upload failed");
-          showToast("❌ Litterbox upload failed");
-          return originalUpload.apply(this, args);
-        }
+        const channelId = file?.channelId ?? ChannelStore?.getChannelId?.();
+        const uploadId = `${channelId}-${Date.now()}`;
 
-        console.log("[ObfuscationPlugin] Litterbox URL received:", litterboxUrl);
+        // Store upload info
+        pendingUploads.set(uploadId, {
+          filename,
+          channelId,
+          status: 'uploading'
+        });
 
-        // Store the Litterbox URL by filename
-        imageUploads.set(filename, litterboxUrl);
-        showToast("🔒 Image URL stored");
+        // Let the original upload proceed normally
+        const result = await originalUpload.apply(this, args);
 
-        // Let the original upload continue - DON'T CANCEL
-        return originalUpload.apply(this, args);
+        // After upload completes, start Litterbox upload in background
+        setTimeout(async () => {
+          try {
+            console.log("[ObfuscationPlugin] Uploading to Litterbox in background:", filename);
+            showToast("📤 Uploading to Litterbox...");
+
+            const litterboxUrl = await uploadToLitterbox(file, "1h");
+            
+            if (!litterboxUrl) {
+              console.error("[ObfuscationPlugin] Litterbox upload failed");
+              showToast("❌ Litterbox upload failed");
+              pendingUploads.delete(uploadId);
+              return;
+            }
+
+            console.log("[ObfuscationPlugin] Litterbox URL received:", litterboxUrl);
+
+            // Update upload status
+            const uploadInfo = pendingUploads.get(uploadId);
+            if (uploadInfo) {
+              uploadInfo.litterboxUrl = litterboxUrl;
+              uploadInfo.status = 'completed';
+              
+              // Find the most recent message in this channel with attachments
+              const messages = MessageStore.getMessages?.(channelId)?.toArray?.() || [];
+              
+              for (let i = messages.length - 1; i >= 0; i--) {
+                const msg = messages[i];
+                if (msg.author?.id === UserStore.getCurrentUser()?.id && 
+                    msg.attachments?.length > 0 &&
+                    msg.attachments.some((att: any) => att.filename === filename)) {
+                  
+                  // Found the message! Now edit it
+                  await editMessageWithLitterboxUrl(msg, litterboxUrl, filename);
+                  break;
+                }
+              }
+            }
+
+            pendingUploads.delete(uploadId);
+            
+          } catch (e) {
+            console.error("[ObfuscationPlugin] Error in background Litterbox upload:", e);
+            showToast("❌ Litterbox upload failed");
+            pendingUploads.delete(uploadId);
+          }
+        }, 1000); // Wait 1 second before starting Litterbox upload
+
+        return result;
 
       } catch (e) {
-        console.error("[ObfuscationPlugin] Error in image upload:", e);
-        showToast("❌ Failed to upload image");
+        console.error("[ObfuscationPlugin] Error in upload:", e);
+        pendingUploads.delete(uploadId);
         return originalUpload.apply(this, args);
       }
     };
@@ -117,86 +155,57 @@ export function applyPatches() {
     });
   }
 
-  // PATCH 2: Outgoing messages - add Litterbox URL to content if we have image uploads
+  // PATCH 2: Also intercept message sending to track which messages have images
   patches.push(
     before("sendMessage", Messages, (args) => {
       try {
+        const channelId = args[0];
         const msg = args[1];
-        const content = msg?.content;
         const attachments = msg?.attachments;
 
-        if (!vstorage.enabled) return;
-        if (!vstorage.secret) return;
-        if (hasObfuscationMarker(content)) return;
+        if (!vstorage.enabled || !vstorage.secret) return;
+        if (!attachments?.length) return;
 
-        // Check if we have any image uploads for this message
-        let hasImageUrls = false;
-        let imageUrlsContent = "";
+        // Check if any attachments are images
+        const hasImages = attachments.some((att: any) => {
+          const filename = att.filename ?? "";
+          return att.type?.startsWith("image/") || 
+                 /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(filename);
+        });
 
-        if (attachments && Array.isArray(attachments)) {
-          attachments.forEach((att: any) => {
-            const filename = att.filename;
-            if (filename && imageUploads.has(filename)) {
-              const litterboxUrl = imageUploads.get(filename);
-              const obfuscatedUrl = scramble(litterboxUrl, vstorage.secret);
-              imageUrlsContent += `\n${IMAGE_MARKER}${obfuscatedUrl}`;
-              hasImageUrls = true;
-              
-              // Remove from map after using
-              imageUploads.delete(filename);
-            }
-          });
-        }
-
-        if (hasImageUrls) {
-          console.log("[ObfuscationPlugin] Adding image URLs to message content");
-          
-          if (content) {
-            // Add image URLs to existing content
-            msg.content = `${content}${INVISIBLE_MARKER}${imageUrlsContent}`;
-          } else {
-            // Message only has images, no text
-            msg.content = `${INVISIBLE_MARKER}${imageUrlsContent}`;
-          }
-        } else if (content) {
-          // Original text obfuscation logic
-          console.log("[ObfuscationPlugin] Sending message:", content);
-
-          const scrambled = scramble(content, vstorage.secret);
-          console.log("[ObfuscationPlugin] Scrambled to:", scrambled);
-
-          msg.content = `${INVISIBLE_MARKER}${scrambled}`;
+        if (hasImages) {
+          console.log("[ObfuscationPlugin] Message with images being sent");
+          // The message will be edited later when Litterbox upload completes
         }
 
       } catch (e) {
-        console.error("[ObfuscationPlugin] Error in sendMessage patch:", e);
+        console.error("[ObfuscationPlugin] Error tracking message:", e);
       }
     })
   );
 
-  // PATCH 3: Incoming message decoding
+  // PATCH 3: Handle incoming messages to decode obfuscated images
   patches.push(
-    before("generate", RowManager.prototype, ([data]) => {
+    before("receiveMessage", Messages, (args) => {
       try {
-        if (data.rowType !== 1) return;
-        const message = data.message;
+        if (!vstorage.enabled || !vstorage.secret) return;
+
+        const message = args[0];
         if (!message?.content) return;
 
         const content = message.content;
-        if (!hasObfuscationMarker(content)) return;
+        if (!content.includes(INVISIBLE_MARKER)) return;
 
+        // Decode obfuscated image URLs in the content
         const parts = content.split(INVISIBLE_MARKER);
         const visibleContent = parts[0]?.trim() || "";
         const obfuscatedContent = parts[1]?.trim() || "";
 
-        if (!vstorage.secret || !obfuscatedContent) return;
+        if (!obfuscatedContent) return;
 
-        let finalContent = visibleContent;
+        const imageMatches = obfuscatedContent.split(IMAGE_MARKER).filter(Boolean);
         const embeds = [];
 
-        // Process image markers
-        const imageMatches = obfuscatedContent.split(IMAGE_MARKER).filter(Boolean);
-        
         for (const match of imageMatches) {
           try {
             const litterboxUrl = unscramble(match, vstorage.secret);
@@ -204,92 +213,104 @@ export function applyPatches() {
             if (litterboxUrl.startsWith("https://")) {
               console.log("[ObfuscationPlugin] Decoded image URL:", litterboxUrl);
 
-              // Create image embed
-              const Embed = findByName("Embed") || findByProps("Embed")?.Embed;
-              const EmbedMedia = findByName("EmbedMedia") || findByProps("EmbedMedia")?.EmbedMedia;
-
-              if (Embed && EmbedMedia) {
-                const imageMedia = new EmbedMedia({
+              // Create image embed using FluxDispatcher like the translation plugin
+              const embed = {
+                type: "image",
+                url: litterboxUrl,
+                thumbnail: {
                   url: litterboxUrl,
-                  proxyURL: litterboxUrl,
+                  proxy_url: litterboxUrl,
                   width: 400,
-                  height: 400,
-                  srcIsAnimated: false
-                });
-
-                const embed = new Embed({
-                  type: "image",
+                  height: 400
+                },
+                image: {
                   url: litterboxUrl,
-                  image: imageMedia,
-                  thumbnail: imageMedia,
-                  description: "🔒 Obfuscated Image",
-                  color: 0x2f3136,
-                  bodyTextColor: 0xffffff
-                });
+                  proxy_url: litterboxUrl,
+                  width: 400,
+                  height: 400
+                },
+                description: "🔒 Obfuscated Image"
+              };
 
-                embeds.push(embed);
-              }
+              embeds.push(embed);
             }
           } catch (e) {
             console.error("[ObfuscationPlugin] Error decoding image URL:", e);
           }
         }
 
-        // Add embeds to message
+        // Update message with embeds
         if (embeds.length > 0) {
           if (!message.embeds) message.embeds = [];
           message.embeds.push(...embeds);
-        }
-
-        // Set the final content (only the visible part)
-        if (finalContent) {
-          data.message.content = finalContent;
-        } else if (embeds.length > 0) {
-          // If no text content but we have images, clear the content
-          data.message.content = "";
+          
+          // Keep only the visible content
+          message.content = visibleContent;
         }
 
       } catch (e) {
-        console.error("[ObfuscationPlugin] Error decoding message:", e);
+        console.error("[ObfuscationPlugin] Error processing incoming message:", e);
       }
     })
   );
 
-  // PATCH 4: Reprocess existing messages
-  const reprocessExistingMessages = () => {
-    try {
-      console.log("[ObfuscationPlugin] Reprocessing messages...");
-
-      setTimeout(() => {
-        try {
-          const channels = MessageStore.getMutableMessages?.() ?? {};
-
-          Object.entries(channels).forEach(([channelId, messages]: [string, any]) => {
-            if (!messages) return;
-
-            Object.values(messages).forEach((msg: any) => {
-              if (msg && hasObfuscationMarker(msg.content)) {
-                FluxDispatcher.dispatch({
-                  type: "MESSAGE_UPDATE",
-                  message: { ...msg },
-                });
-              }
-            });
-          });
-        } catch (e) {
-          console.error("[ObfuscationPlugin] Error reprocessing messages:", e);
-        }
-      }, 1000);
-    } catch (e) {
-      console.error("[ObfuscationPlugin] Reprocess failed:", e);
-    }
-  };
-
-  setTimeout(reprocessExistingMessages, 1000);
-
   return () => {
-    console.log("[ObfuscationPlugin] Removing patches...");
     patches.forEach(unpatch => unpatch());
-    imageUploads.clear();
+    pendingUploads.clear();
   };
 }
+
+// Helper function to edit message with Litterbox URL
+async function editMessageWithLitterboxUrl(originalMessage: any, litterboxUrl: string, filename: string) {
+  try {
+    const channelId = originalMessage.channel_id;
+    const messageId = originalMessage.id;
+    
+    console.log("[ObfuscationPlugin] Editing message with Litterbox URL:", litterboxUrl);
+
+    // Obfuscate the URL
+    const obfuscatedUrl = scramble(litterboxUrl, vstorage.secret);
+    const imageContent = `${IMAGE_MARKER}${obfuscatedUrl}`;
+
+    // Get current message content
+    const currentContent = originalMessage.content || "";
+    
+    // Create new content with obfuscated image URL
+    let newContent = currentContent;
+    if (currentContent) {
+      newContent = `${currentContent}\n${INVISIBLE_MARKER}${imageContent}`;
+    } else {
+      newContent = `${INVISIBLE_MARKER}${imageContent}`;
+    }
+
+    // Use FluxDispatcher to update the message locally (like the translation plugin)
+    FluxDispatcher.dispatch({
+      type: "MESSAGE_UPDATE",
+      message: {
+        ...originalMessage,
+        content: newContent,
+        // Remove the original attachment since we're replacing it with Litterbox URL
+        attachments: originalMessage.attachments?.filter((att: any) => att.filename !== filename) || []
+      },
+      log_edit: false,
+      otherPluginBypass: true
+    });
+
+    // Also send the actual edit to Discord
+    if (Messages.editMessage) {
+      await Messages.editMessage(channelId, messageId, {
+        content: newContent,
+        attachments: originalMessage.attachments?.filter((att: any) => att.filename !== filename) || []
+      });
+    }
+
+    showToast("🔒 Image obfuscated and message updated");
+
+  } catch (e) {
+    console.error("[ObfuscationPlugin] Error editing message:", e);
+    showToast("❌ Failed to update message with obfuscated image");
+  }
+}
+
+// Get UserStore for current user check
+const UserStore = findByStoreName("UserStore");
