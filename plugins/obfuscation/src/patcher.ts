@@ -85,7 +85,7 @@ async function replaceImageWithObfuscatedTxt(msg: any, litterboxUrl: string, fil
   }
 }
 
-export default function applyAttachmentPatcher() {
+export default function applyPatches() {
   const patches: (() => void)[] = [];
 
   // PATCH 1: Intercept image uploads
