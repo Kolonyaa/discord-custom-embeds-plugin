@@ -1,13 +1,10 @@
 // attachmentPatcher.tsx
-import { before, after } from "@vendetta/patcher";
 import { findByProps, findByStoreName, findByName } from "@vendetta/metro";
+import { before, after } from "@vendetta/patcher";
 import { FluxDispatcher } from "@vendetta/metro/common";
 import { showToast } from "@vendetta/ui/toasts";
 import { vstorage } from "./storage";
 import { scramble, unscramble } from "./obfuscationUtils";
-
-const ATTACHMENT_FILENAME = "obfuscated_image.txt";
-const INVISIBLE_MARKER = "\u200b\u200d\u200b";
 
 const Messages = findByProps("sendMessage", "editMessage", "receiveMessage");
 const MessageStore = findByStoreName("MessageStore");
@@ -15,166 +12,320 @@ const RowManager = findByName("RowManager");
 const CloudUpload = findByProps("CloudUpload")?.CloudUpload;
 const UserStore = findByStoreName("UserStore");
 
-// Upload file to Litterbox
-async function uploadToLitterbox(media: any): Promise<string | null> {
+// Safely get EmojiStore (optional)
+let getCustomEmojiById: any = null;
+try {
+  const EmojiStore = findByStoreName("EmojiStore");
+  getCustomEmojiById = EmojiStore?.getCustomEmojiById;
+} catch {
+  console.warn("[ObfuscationPlugin] EmojiStore not available, emoji rendering disabled");
+}
+
+// Invisible marker sequence
+const INVISIBLE_MARKER = "\u200b\u200d\u200b";
+const IMAGE_MARKER = "OBFUSCATED_IMAGE:";
+
+// Helper functions
+function hasObfuscationMarker(content: string): boolean {
+  return content?.includes(INVISIBLE_MARKER);
+}
+
+// Track pending image uploads
+const pendingImageUploads = new Map();
+
+export function applyPatches() {
+  const patches = [];
+
+  // PATCH 1: Intercept message sending to handle attachments
+  patches.push(
+    before("sendMessage", Messages, async (args) => {
+      try {
+        const msg = args[1];
+        const content = msg?.content;
+        const attachments = msg?.attachments || [];
+
+        if (!vstorage.enabled || !vstorage.secret) return;
+
+        // Check if there are any image attachments to obfuscate
+        const imageAttachments = attachments.filter((att: any) => 
+          att.type?.startsWith("image/") || 
+          /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(att.filename || "")
+        );
+
+        if (imageAttachments.length === 0) {
+          // Only text obfuscation needed
+          if (content && !hasObfuscationMarker(content)) {
+            const scrambled = scramble(content, vstorage.secret);
+            msg.content = `${INVISIBLE_MARKER}${scrambled}`;
+          }
+          return;
+        }
+
+        // We have images to obfuscate - cancel the original message
+        args[0] = null; // Prevent the original message from sending
+
+        showToast("📤 Uploading images to Litterbox...");
+
+        // Upload all images to Litterbox
+        const uploadPromises = imageAttachments.map(async (attachment: any) => {
+          try {
+            const litterboxUrl = await uploadToLitterbox(attachment, "1h");
+            if (!litterboxUrl) throw new Error("Upload failed");
+            return { originalFilename: attachment.filename, litterboxUrl };
+          } catch (err) {
+            console.error("[ObfuscationPlugin] Image upload failed:", err);
+            return null;
+          }
+        });
+
+        const uploadResults = (await Promise.all(uploadPromises)).filter(Boolean);
+        
+        if (uploadResults.length === 0) {
+          showToast("❌ All image uploads failed");
+          return;
+        }
+
+        // Build the new message content
+        let newContent = content || "";
+        
+        // Add text obfuscation if there's text content
+        if (content && !hasObfuscationMarker(content)) {
+          const scrambled = scramble(content, vstorage.secret);
+          newContent = `${INVISIBLE_MARKER}${scrambled}`;
+        }
+
+        // Add image obfuscation markers
+        const imageMarkers = uploadResults.map(result => 
+          `${IMAGE_MARKER}${scramble(result.litterboxUrl, vstorage.secret)}`
+        ).join("");
+
+        if (newContent.includes(INVISIBLE_MARKER)) {
+          // Append images to existing obfuscated content
+          newContent += imageMarkers;
+        } else {
+          // Create new obfuscated content with just images
+          newContent = `${INVISIBLE_MARKER}${imageMarkers}`;
+        }
+
+        // Send the new message without attachments
+        setTimeout(async () => {
+          try {
+            await Messages.sendMessage(msg.channelId, {
+              content: newContent,
+              messageReference: msg.messageReference,
+              stickerIds: msg.stickerIds,
+              tts: msg.tts,
+              // Don't include attachments
+            });
+            showToast("🔒 Message sent with obfuscated images");
+          } catch (err) {
+            console.error("[ObfuscationPlugin] Failed to send obfuscated message:", err);
+            showToast("❌ Failed to send message");
+          }
+        }, 100);
+
+      } catch (e) {
+        console.error("[ObfuscationPlugin] Error in sendMessage patch:", e);
+      }
+    })
+  );
+
+  // PATCH 2: Incoming message decoding (enhanced for images)
+  patches.push(
+    before("generate", RowManager.prototype, ([data]) => {
+      try {
+        if (data.rowType !== 1) return;
+        const message = data.message;
+        if (!message?.content) return;
+
+        const content = message.content;
+        if (!hasObfuscationMarker(content)) return;
+
+        const parts = content.split(INVISIBLE_MARKER);
+        const visibleContent = parts[0]?.trim() || "";
+        const obfuscatedContent = parts[1]?.trim() || "";
+
+        if (!vstorage.secret || !obfuscatedContent) return;
+
+        let finalContent = visibleContent;
+        let hasImages = false;
+
+        // Check for image markers
+        if (obfuscatedContent.includes(IMAGE_MARKER)) {
+          const imageParts = obfuscatedContent.split(IMAGE_MARKER).filter(Boolean);
+
+          for (const imagePart of imageParts) {
+            try {
+              const litterboxUrl = unscramble(imagePart, vstorage.secret);
+
+              if (litterboxUrl.startsWith("https://")) {
+                console.log("[ObfuscationPlugin] Decoded image URL:", litterboxUrl);
+                hasImages = true;
+
+                // Create image embed
+                const embed = {
+                  type: "image",
+                  url: litterboxUrl,
+                  thumbnail: {
+                    url: litterboxUrl,
+                    proxy_url: litterboxUrl,
+                    width: 400,
+                    height: 400,
+                  },
+                  image: {
+                    url: litterboxUrl,
+                    proxy_url: litterboxUrl,
+                    width: 400,
+                    height: 400,
+                  },
+                  description: "🔒 Obfuscated Image"
+                };
+
+                if (!message.embeds) message.embeds = [];
+                message.embeds.push(embed);
+              }
+            } catch (e) {
+              console.error("[ObfuscationPlugin] Error decoding image:", e);
+            }
+          }
+
+          // Update content display
+          if (hasImages && visibleContent) {
+            finalContent = visibleContent;
+          } else if (hasImages) {
+            finalContent = "🔒 Obfuscated Image";
+          }
+        } else {
+          // Original text decoding logic
+          const decoded = unscramble(obfuscatedContent, vstorage.secret);
+          console.log("[ObfuscationPlugin] Decoded:", decoded);
+
+          const INDICATOR_EMOJI_URL = "https://cdn.discordapp.com/emojis/1429170621891477615.webp?size=48&quality=lossless";
+          const wrappedEmojiUrl = `<${INDICATOR_EMOJI_URL}>`;
+
+          finalContent = `${wrappedEmojiUrl}${decoded}`;
+        }
+
+        data.message.content = finalContent;
+
+      } catch (e) {
+        console.error("[ObfuscationPlugin] Error decoding message:", e);
+      }
+    })
+  );
+
+  // PATCH 3: Emoji rendering (your existing code)
+  if (getCustomEmojiById) {
+    patches.push(
+      after("generate", RowManager.prototype, ([data], row) => {
+        try {
+          if (data.rowType !== 1) return;
+          const message = row?.message;
+          if (!message || !message.content) return;
+
+          if (Array.isArray(message.content)) {
+            for (let i = 0; i < message.content.length; i++) {
+              const el = message.content[i];
+              if (el && el.type === "link" && el.target) {
+                const match = el.target.match(/https:\/\/cdn\.discordapp\.com\/emojis\/(\d+)\.\w+/);
+                if (!match) continue;
+
+                const url = `${match[0]}?size=128`;
+
+                let emojiName = "<indicator>";
+                try {
+                  const emoji = getCustomEmojiById(match[1]);
+                  if (emoji && emoji.name) emojiName = emoji.name;
+                } catch (e) {
+                  console.warn("[ObfuscationPlugin] Failed to get emoji info:", e);
+                }
+
+                message.content[i] = {
+                  type: "customEmoji",
+                  id: match[1],
+                  alt: emojiName,
+                  src: url,
+                  frozenSrc: url.replace("gif", "webp"),
+                  jumboable: false,
+                };
+              }
+            }
+          }
+        } catch (e) {
+          console.error("[ObfuscationPlugin] Emoji rendering error:", e);
+        }
+      })
+    );
+  }
+
+  // PATCH 4: Reprocess existing messages
+  const reprocessExistingMessages = () => {
+    try {
+      setTimeout(() => {
+        try {
+          const channels = MessageStore.getMutableMessages?.() ?? {};
+          Object.entries(channels).forEach(([channelId, messages]: [string, any]) => {
+            if (!messages) return;
+            Object.values(messages).forEach((msg: any) => {
+              if (msg && hasObfuscationMarker(msg.content)) {
+                FluxDispatcher.dispatch({
+                  type: "MESSAGE_UPDATE",
+                  message: { ...msg },
+                });
+              }
+            });
+          });
+        } catch (e) {
+          console.error("[ObfuscationPlugin] Error reprocessing messages:", e);
+        }
+      }, 1000);
+    } catch (e) {
+      console.error("[ObfuscationPlugin] Reprocess failed:", e);
+    }
+  };
+
+  setTimeout(reprocessExistingMessages, 1000);
+
+  return () => {
+    console.log("[ObfuscationPlugin] Removing patches...");
+    patches.forEach(unpatch => unpatch());
+    pendingImageUploads.clear();
+  };
+}
+
+// Litterbox upload function (unchanged)
+async function uploadToLitterbox(media: any, duration = "1h"): Promise<string | null> {
   try {
-    const fileUri = media?.item?.originalUri || media?.uri || media?.fileUri || media?.path || media?.sourceURL;
+    const fileUri =
+      media?.item?.originalUri ||
+      media?.uri ||
+      media?.fileUri ||
+      media?.path ||
+      media?.sourceURL;
+
     if (!fileUri) throw new Error("Missing file URI");
 
     const filename = media.filename ?? "upload";
+
     const formData = new FormData();
     formData.append("reqtype", "fileupload");
-    formData.append("time", "1h");
+    formData.append("time", duration);
     formData.append("fileToUpload", {
       uri: fileUri,
       name: filename,
       type: media.mimeType ?? "application/octet-stream",
     } as any);
 
-    const res = await fetch("https://litterbox.catbox.moe/resources/internals/api.php", {
+    const response = await fetch("https://litterbox.catbox.moe/resources/internals/api.php", {
       method: "POST",
       body: formData,
     });
 
-    const text = await res.text();
+    const text = await response.text();
     if (!text.startsWith("https://")) throw new Error(text);
     return text;
-  } catch (e) {
-    console.error("[ObfuscationPlugin] Litterbox upload failed:", e);
+  } catch (err) {
+    console.error("[ObfuscationPlugin] Litterbox upload failed:", err);
     return null;
   }
-}
-
-// Helper to edit message with obfuscated .txt attachment
-async function replaceImageWithObfuscatedTxt(msg: any, litterboxUrl: string, filename: string) {
-  try {
-    const obfuscatedUrl = scramble(litterboxUrl, vstorage.secret);
-
-    const txtAttachment = {
-      filename: ATTACHMENT_FILENAME,
-      contentType: "text/plain",
-      data: new TextEncoder().encode(obfuscatedUrl).buffer,
-    };
-
-    // Remove original image attachment
-    const newAttachments = msg.attachments?.filter((a: any) => a.filename !== filename) ?? [];
-    newAttachments.push(txtAttachment);
-
-    // Update message locally
-    FluxDispatcher.dispatch({
-      type: "MESSAGE_UPDATE",
-      message: {
-        ...msg,
-        attachments: newAttachments,
-        edited_timestamp: new Date().toISOString(),
-      },
-      log_edit: false,
-      otherPluginBypass: true,
-    });
-
-    // Update message on server
-    if (Messages.editMessage) {
-      await Messages.editMessage(msg.channel_id, msg.id, { attachments: newAttachments });
-    }
-
-    showToast("🔒 Image obfuscated in .txt");
-
-  } catch (e) {
-    console.error("[ObfuscationPlugin] Failed to replace image:", e);
-    showToast("❌ Failed to obfuscate image");
-  }
-}
-
-export default function applyPatches() {
-  const patches: (() => void)[] = [];
-
-  // PATCH 1: Intercept image uploads
-  if (CloudUpload?.prototype?.reactNativeCompressAndExtractData) {
-    const originalUpload = CloudUpload.prototype.reactNativeCompressAndExtractData;
-
-    CloudUpload.prototype.reactNativeCompressAndExtractData = async function (...args: any[]) {
-      try {
-        if (!vstorage.enabled || !vstorage.secret) return originalUpload.apply(this, args);
-
-        const file = this;
-        const filename = file?.filename ?? "file";
-        const isImage = file?.type?.startsWith("image/") || /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(filename);
-        if (!isImage) return originalUpload.apply(this, args);
-
-        console.log("[ObfuscationPlugin] Uploading image:", filename);
-        const result = await originalUpload.apply(this, args);
-        if (!result) return result;
-
-        // Start background Litterbox upload after a short delay
-        setTimeout(async () => {
-          try {
-            showToast("📤 Uploading to Litterbox...");
-            const url = await uploadToLitterbox(file);
-            if (!url) return showToast("❌ Litterbox upload failed");
-
-            const messages = MessageStore.getMessages?.(file?.channelId)?.toArray?.() ?? [];
-            const currentUser = UserStore.getCurrentUser();
-            for (let i = messages.length - 1; i >= 0; i--) {
-              const msg = messages[i];
-              if (msg.author?.id === currentUser?.id && msg.attachments?.length > 0) {
-                await replaceImageWithObfuscatedTxt(msg, url, filename);
-                break;
-              }
-            }
-          } catch (e) {
-            console.error("[ObfuscationPlugin] Error processing image:", e);
-            showToast("❌ Failed to process image");
-          }
-        }, 2000);
-
-        return result;
-      } catch (e) {
-        console.error("[ObfuscationPlugin] Upload patch error:", e);
-        return originalUpload.apply(this, args);
-      }
-    };
-
-    patches.push(() => {
-      CloudUpload.prototype.reactNativeCompressAndExtractData = originalUpload;
-    });
-  }
-
-  // PATCH 2: Detect obfuscated .txt attachments
-  if (RowManager?.prototype?.generate) {
-    patches.push(
-      after("generate", RowManager.prototype, (_, row) => {
-        const { message } = row;
-        if (!message?.attachments?.length) return;
-
-        const fakeEmbeds: any[] = [];
-
-        message.attachments.forEach((att: any) => {
-          if (att.filename === ATTACHMENT_FILENAME) {
-            att.__isObfuscated = true;
-
-            const placeholderUrl = "https://i.imgur.com/7dZrkGD.png";
-            fakeEmbeds.push({
-              type: "image",
-              url: placeholderUrl,
-              image: { url: placeholderUrl, proxy_url: placeholderUrl, width: 200, height: 200, srcIsAnimated: false },
-              thumbnail: { url: placeholderUrl, proxy_url: placeholderUrl, width: 200, height: 200, srcIsAnimated: false },
-              description: "🔒 Obfuscated Image (click to decode)",
-              color: 0x2f3136,
-              bodyTextColor: 0xffffff,
-            });
-          }
-        });
-
-        if (fakeEmbeds.length) {
-          if (!message.embeds) message.embeds = [];
-          message.embeds.push(...fakeEmbeds);
-        }
-      })
-    );
-  }
-
-  // PATCH 3 (optional): add decode handler when user clicks the placeholder
-  // This can be implemented as a UI button or tap gesture to read att.data and unscramble it.
-
-  return () => patches.forEach(unpatch => unpatch());
 }
