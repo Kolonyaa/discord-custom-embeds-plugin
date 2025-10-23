@@ -46,7 +46,7 @@ async function uploadToLitterbox(media: any, duration = "1h"): Promise<string | 
   }
 }
 
-export default function applyAttachmentPatcher() {
+export default function applyPatches() {
   const patches: (() => void)[] = [];
 
   const Embed = findByName("Embed") || findByProps("Embed")?.Embed;
