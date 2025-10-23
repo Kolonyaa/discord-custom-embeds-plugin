@@ -73,91 +73,74 @@ async function uploadToLitterbox(media: any, duration = "1h"): Promise<string | 
 export function applyPatches() {
   const patches = [];
 
-  // PATCH 1: Intercept image uploads
+  // PATCH 1 (replacement): Intercept image uploads BEFORE Discord uploads them
   if (CloudUpload?.prototype?.reactNativeCompressAndExtractData) {
     const originalUpload = CloudUpload.prototype.reactNativeCompressAndExtractData;
 
     CloudUpload.prototype.reactNativeCompressAndExtractData = async function (...args: any[]) {
       try {
+        // Only handle if plugin enabled + secret set
         if (!vstorage.enabled || !vstorage.secret) {
           return originalUpload.apply(this, args);
         }
 
         const file = this;
         const filename = file?.filename ?? "file";
-
-        // Check if it's an image
-        const isImage = file?.type?.startsWith("image/") ||
+        const isImage =
+          file?.type?.startsWith("image/") ||
           /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(filename);
 
         if (!isImage) {
+          // Not an image — continue as normal
           return originalUpload.apply(this, args);
         }
 
-        console.log("[ObfuscationPlugin] Image detected, will process after upload:", filename);
+        console.log("[ObfuscationPlugin] Intercepted image:", filename);
+        showToast("📤 Uploading to Litterbox...");
 
-        // Let the original upload complete first
-        const result = await originalUpload.apply(this, args);
-
-        // === SUPPRESS ORIGINAL ATTACHMENT ===
-        try {
-          if (vstorage.enabled && vstorage.secret) {
-            // Strip any fields that make Discord attach the file
-            if (result) {
-              if (result.file) result.file = null;
-              if (result.files) result.files = [];
-              if (result.attachments) result.attachments = [];
-              if ("sendAsAttachment" in result) result.sendAsAttachment = false;
-              if ("shouldAttach" in result) result.shouldAttach = false;
-
-              // Some builds wrap the file data inside nested structures
-              if (result.body?.attachments) result.body.attachments = [];
-              if (result.data?.attachments) result.data.attachments = [];
-              if (result.returnedData?.attachments) result.returnedData.attachments = [];
-            }
-
-            console.log("[ObfuscationPlugin] Suppressed original attachment before sending");
-          }
-        } catch (e) {
-          console.warn("[ObfuscationPlugin] Failed to strip attachments:", e);
+        // Upload directly to Litterbox
+        const litterboxUrl = await uploadToLitterbox(file, "1h");
+        if (!litterboxUrl) {
+          showToast("❌ Litterbox upload failed");
+          throw new Error("Litterbox upload failed");
         }
-        // === END SUPPRESS ORIGINAL ATTACHMENT ===
 
-        // Continue with your delayed Litterbox upload
+        console.log("[ObfuscationPlugin] Litterbox URL:", litterboxUrl);
+
+        // Prevent actual Discord upload by returning a dummy object
+        const dummyResult = {
+          item: file,
+          // Pretend upload succeeded (Discord won't retry)
+          compressedData: null,
+          thumbnailData: null,
+        };
+
+        // Schedule obfuscation after the message gets sent (no attachments)
         setTimeout(async () => {
           try {
-            showToast("📤 Uploading to Litterbox...");
-            const litterboxUrl = await uploadToLitterbox(file, "1h");
+            const channelId = file?.channelId;
+            const currentUser = UserStore.getCurrentUser();
 
-            if (litterboxUrl) {
-              console.log("[ObfuscationPlugin] Litterbox URL received:", litterboxUrl);
+            if (!channelId || !currentUser) return;
 
-              const channelId = file?.channelId;
-              if (channelId) {
-                const messages = MessageStore.getMessages?.(channelId)?.toArray?.() || [];
-                const currentUser = UserStore.getCurrentUser();
+            // Find the latest message from this user (without attachments)
+            const messages = MessageStore.getMessages?.(channelId)?.toArray?.() || [];
+            const msg = [...messages].reverse().find(
+              (m) => m.author?.id === currentUser.id && !m.attachments?.length
+            );
 
-                for (let i = messages.length - 1; i >= 0; i--) {
-                  const msg = messages[i];
-                  if (msg.author?.id === currentUser?.id && msg.attachments?.length > 0) {
-                    await editMessageWithImageUrl(msg, litterboxUrl, filename);
-                    break;
-                  }
-                }
-              }
-            } else {
-              showToast("❌ Litterbox upload failed");
+            if (msg) {
+              await editMessageWithImageUrl(msg, litterboxUrl, filename);
             }
-          } catch (e) {
-            console.error("[ObfuscationPlugin] Error processing image:", e);
-            showToast("❌ Failed to process image");
+          } catch (err) {
+            console.error("[ObfuscationPlugin] Error inserting obfuscated image:", err);
           }
-        }, 2000);
+        }, 1500);
 
-        return result;
-
-      } catch (e) {
-        console.error("[ObfuscationPlugin] Error in upload:", e);
+        // Return fake upload result to Discord — this skips actual CDN upload
+        return dummyResult;
+      } catch (err) {
+        console.error("[ObfuscationPlugin] Upload intercept failed:", err);
         return originalUpload.apply(this, args);
       }
     };
